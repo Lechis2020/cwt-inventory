@@ -5,6 +5,7 @@ const state = {
   draftImagePreviewData: '',
   draftImageChanged: false,
   draftImageLoadToken: 0,
+  thumbnailLoadIds: new Set(),
   draftMachines: [],
   scanTarget: null,
   scannerStream: null,
@@ -515,6 +516,9 @@ function renderItems() {
       row.classList.add('row-low-stock');
     }
     const thumbnail = sanitizeImageData(item.imagePreviewData) || sanitizeImageData(item.imageData);
+    if (!thumbnail && item.hasImage) {
+      hydrateListThumbnail(item.id);
+    }
     const imageMarkup = thumbnail
       ? `<img class="item-thumb" src="${thumbnail}" loading="lazy" alt="${escapeHtml(item.name)} picture">`
       : item.hasImage
@@ -553,6 +557,54 @@ function renderItems() {
 
     elements.itemsBody.appendChild(row);
   });
+}
+
+async function hydrateListThumbnail(itemId) {
+  if (!itemId || typeof window.inventoryAPI.getItemImage !== 'function') {
+    return;
+  }
+  if (state.thumbnailLoadIds.has(itemId)) {
+    return;
+  }
+
+  state.thumbnailLoadIds.add(itemId);
+  try {
+    const payload = await window.inventoryAPI.getItemImage(itemId);
+    const index = state.items.findIndex((entry) => entry.id === itemId);
+    if (index < 0) {
+      return;
+    }
+
+    const previewFromApi = sanitizeImageData(payload?.imagePreviewData);
+    const fullFromApi = sanitizeImageData(payload?.imageData);
+    let preview = previewFromApi;
+
+    if (!preview && fullFromApi) {
+      preview = await downscaleImageDataUrl(fullFromApi, IMAGE_PROCESS_PREVIEW_SIDE, IMAGE_PROCESS_PREVIEW_QUALITY);
+    }
+
+    if (!preview) {
+      return;
+    }
+
+    const current = state.items[index];
+    if (sanitizeImageData(current.imagePreviewData) === preview) {
+      return;
+    }
+
+    state.items[index] = {
+      ...current,
+      imagePreviewData: preview,
+      hasImage: true
+    };
+
+    persistItemsCache(state.items);
+    renderItems();
+  } catch (_error) {
+    // Keep UI stable; placeholder remains if thumbnail hydration fails.
+  } finally {
+    state.thumbnailLoadIds.delete(itemId);
+  }
 }
 
 function isLowStock(item) {
