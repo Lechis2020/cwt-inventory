@@ -47,6 +47,10 @@ function sanitizeImageData(imageData) {
   return trimmed.startsWith('data:image/') ? trimmed : '';
 }
 
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object || {}, key);
+}
+
 function sanitizeSourceUrl(sourceUrl) {
   if (typeof sourceUrl !== 'string') {
     return '';
@@ -112,7 +116,8 @@ function normalizeDatabase(data) {
         ...item,
         machines: sanitizeMachineList(item?.machines),
         sourceUrl: sanitizeSourceUrl(item?.sourceUrl),
-        imageData: sanitizeImageData(item?.imageData)
+        imageData: sanitizeImageData(item?.imageData),
+        imagePreviewData: sanitizeImageData(item?.imagePreviewData)
       }))
       : [],
     movements: Array.isArray(data.movements) ? data.movements : []
@@ -383,6 +388,7 @@ ipcMain.on('add-item', (event, payload) => {
     machines: sanitizeMachineList(payload?.machines),
     sourceUrl: sanitizeSourceUrl(payload?.sourceUrl),
     imageData: sanitizeImageData(payload?.imageData),
+    imagePreviewData: sanitizeImageData(payload?.imagePreviewData),
     quantity,
     reorderLevel,
     unitPrice,
@@ -435,7 +441,12 @@ ipcMain.on('update-item', (event, payload) => {
   item.location = (payload?.location || '').trim();
   item.machines = sanitizeMachineList(payload?.machines);
   item.sourceUrl = sanitizeSourceUrl(payload?.sourceUrl);
-  item.imageData = sanitizeImageData(payload?.imageData);
+  const hasImageFields = hasOwn(payload, 'imageData') || hasOwn(payload, 'imagePreviewData');
+  const shouldUpdateImage = payload?.imageUpdated === true || (payload?.imageUpdated == null && hasImageFields);
+  if (shouldUpdateImage) {
+    item.imageData = sanitizeImageData(payload?.imageData);
+    item.imagePreviewData = sanitizeImageData(payload?.imagePreviewData);
+  }
   item.reorderLevel = Math.max(0, Math.floor(parseNumber(payload?.reorderLevel, 0)));
   item.unitPrice = Math.max(0, parseNumber(payload?.unitPrice, 0));
   item.notes = (payload?.notes || '').trim();
@@ -524,6 +535,22 @@ ipcMain.on('get-item-movements', (event, itemId) => {
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
   event.reply('item-movements-list', { itemId, movements });
+});
+
+ipcMain.handle('get-item-image', async (_event, itemId) => {
+  const item = findItem(itemId);
+  if (!item) {
+    return { id: itemId, imageData: '', imagePreviewData: '', hasImage: false };
+  }
+
+  const imageData = sanitizeImageData(item.imageData);
+  const imagePreviewData = sanitizeImageData(item.imagePreviewData);
+  return {
+    id: item.id,
+    imageData,
+    imagePreviewData,
+    hasImage: Boolean(imageData || imagePreviewData)
+  };
 });
 
 ipcMain.handle('create-backup', async () => {

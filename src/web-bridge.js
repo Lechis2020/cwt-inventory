@@ -52,6 +52,15 @@
         emit('items-list', payload.items || []);
       });
     },
+    getItemImage: async function getItemImage(itemId) {
+      const payload = await request(`/items/${encodeURIComponent(itemId)}/image`);
+      return {
+        id: payload.id,
+        imageData: payload.imageData || '',
+        imagePreviewData: payload.imagePreviewData || '',
+        hasImage: Boolean(payload.hasImage)
+      };
+    },
     addItem: function addItem(data) {
       run(async function createItem() {
         const payload = await request('/items', { method: 'POST', body: data });

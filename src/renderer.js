@@ -2,6 +2,9 @@ const state = {
   items: [],
   historyItemId: null,
   draftImageData: '',
+  draftImagePreviewData: '',
+  draftImageChanged: false,
+  draftImageLoadToken: 0,
   draftMachines: [],
   scanTarget: null,
   scannerStream: null,
@@ -18,6 +21,10 @@ const state = {
 };
 
 const elements = {};
+const IMAGE_PROCESS_MAX_SIDE = 1600;
+const IMAGE_PROCESS_PREVIEW_SIDE = 320;
+const IMAGE_PROCESS_QUALITY = 0.78;
+const IMAGE_PROCESS_PREVIEW_QUALITY = 0.72;
 
 document.addEventListener('DOMContentLoaded', () => {
   cacheElements();
@@ -316,6 +323,8 @@ function normalizeItems(items) {
     machines: sanitizeMachineList(item.machines),
     sourceUrl: sanitizeSourceUrl(item.sourceUrl),
     imageData: sanitizeImageData(item.imageData),
+    imagePreviewData: sanitizeImageData(item.imagePreviewData),
+    hasImage: Boolean(item.hasImage || sanitizeImageData(item.imageData) || sanitizeImageData(item.imagePreviewData)),
     notes: item.notes || '',
     quantity: Math.max(0, Math.floor(toNumber(item.quantity, 0))),
     reorderLevel: Math.max(0, Math.floor(toNumber(item.reorderLevel, 0))),
@@ -458,13 +467,17 @@ function renderItems() {
     if (isLowStock(item)) {
       row.classList.add('row-low-stock');
     }
+    const thumbnail = sanitizeImageData(item.imagePreviewData) || sanitizeImageData(item.imageData);
+    const imageMarkup = thumbnail
+      ? `<img class="item-thumb" src="${thumbnail}" loading="lazy" alt="${escapeHtml(item.name)} picture">`
+      : item.hasImage
+        ? '<div class="item-thumb placeholder">Photo</div>'
+        : '<div class="item-thumb placeholder">No image</div>';
 
     row.innerHTML = `
       <td>
         <div class="item-cell">
-          ${item.imageData
-            ? `<img class="item-thumb" src="${item.imageData}" alt="${escapeHtml(item.name)} picture">`
-            : '<div class="item-thumb placeholder">No image</div>'}
+          ${imageMarkup}
           <div>
             <div class="item-name">${escapeHtml(item.name)}</div>
             ${item.notes ? `<div class="item-note">${escapeHtml(item.notes)}</div>` : ''}
@@ -566,11 +579,17 @@ function onItemFormSubmit(event) {
     quantity: Math.max(0, Math.floor(toNumber(elements.itemQuantity.value, 0))),
     reorderLevel: Math.max(0, Math.floor(toNumber(elements.itemReorderLevel.value, 0))),
     unitPrice: Math.max(0, toNumber(elements.itemUnitPrice.value, 0)),
-    notes: elements.itemNotes.value.trim(),
-    imageData: state.draftImageData
+    notes: elements.itemNotes.value.trim()
   };
 
-  if (payload.id) {
+  const isUpdate = Boolean(payload.id);
+  if (!isUpdate || state.draftImageChanged) {
+    payload.imageData = state.draftImageData;
+    payload.imagePreviewData = state.draftImagePreviewData;
+    payload.imageUpdated = true;
+  }
+
+  if (isUpdate) {
     window.inventoryAPI.updateItem(payload);
     return;
   }
@@ -634,6 +653,8 @@ function openItemModal(item = null) {
   elements.itemImageInput.value = '';
   elements.itemImageCameraInput.value = '';
   elements.machineInput.value = '';
+  state.draftImageChanged = false;
+  state.draftImageLoadToken += 1;
 
   if (item) {
     elements.itemModalTitle.textContent = 'Edit Item';
@@ -653,6 +674,11 @@ function openItemModal(item = null) {
     elements.itemNotes.value = item.notes;
     state.draftMachines = sanitizeMachineList(item.machines);
     state.draftImageData = sanitizeImageData(item.imageData);
+    state.draftImagePreviewData = sanitizeImageData(item.imagePreviewData);
+
+    if (!state.draftImageData && item.hasImage) {
+      loadFullImageForEdit(item.id, state.draftImageLoadToken);
+    }
   } else {
     elements.itemModalTitle.textContent = 'Add Item';
     elements.itemFormSubmit.textContent = 'Save Item';
@@ -666,12 +692,38 @@ function openItemModal(item = null) {
     elements.itemSourceUrl.value = '';
     state.draftMachines = [];
     state.draftImageData = '';
+    state.draftImagePreviewData = '';
   }
 
   renderDraftMachines();
   renderItemImagePreview();
   openModal('item-modal');
   elements.itemName.focus();
+}
+
+async function loadFullImageForEdit(itemId, token) {
+  if (!itemId || typeof window.inventoryAPI.getItemImage !== 'function') {
+    return;
+  }
+
+  try {
+    const payload = await window.inventoryAPI.getItemImage(itemId);
+    if (state.draftImageLoadToken !== token || elements.itemId.value !== itemId) {
+      return;
+    }
+
+    const fullImage = sanitizeImageData(payload?.imageData);
+    const previewImage = sanitizeImageData(payload?.imagePreviewData);
+    if (!fullImage && !previewImage) {
+      return;
+    }
+
+    state.draftImageData = fullImage;
+    state.draftImagePreviewData = previewImage || fullImage;
+    renderItemImagePreview();
+  } catch (_error) {
+    // Keep editing flow smooth even if image fetch fails.
+  }
 }
 
 function addMachineFromInput() {
@@ -859,6 +911,8 @@ function applyScannedCode(value) {
 
 function clearDraftImage() {
   state.draftImageData = '';
+  state.draftImagePreviewData = '';
+  state.draftImageChanged = true;
   elements.itemImageInput.value = '';
   elements.itemImageCameraInput.value = '';
   renderItemImagePreview();
@@ -872,7 +926,7 @@ async function onItemImageSelected(event) {
 
   if (!file.type.startsWith('image/')) {
     showToast('Only image files are allowed.', true);
-    clearDraftImage();
+    event.target.value = '';
     return;
   }
 
@@ -880,17 +934,36 @@ async function onItemImageSelected(event) {
   const maxBytes = maxMb * 1024 * 1024;
   if (file.size > maxBytes) {
     showToast(`Image is too large. Use a file under ${maxMb} MB.`, true);
-    clearDraftImage();
+    event.target.value = '';
     return;
   }
 
   try {
-    state.draftImageData = await fileToDataUrl(file);
+    const processed = await processImageUpload(file);
+    state.draftImageData = processed.imageData;
+    state.draftImagePreviewData = processed.imagePreviewData || processed.imageData;
+    state.draftImageChanged = true;
     renderItemImagePreview();
+    if (processed.optimized) {
+      showToast('Photo optimized for faster loading.');
+    }
   } catch (_error) {
     showToast('Could not load image.', true);
-    clearDraftImage();
+    event.target.value = '';
   }
+}
+
+async function processImageUpload(file) {
+  const sourceDataUrl = await fileToDataUrl(file);
+  const optimizedFull = await downscaleImageDataUrl(sourceDataUrl, IMAGE_PROCESS_MAX_SIDE, IMAGE_PROCESS_QUALITY);
+  const optimizedPreview = await downscaleImageDataUrl(sourceDataUrl, IMAGE_PROCESS_PREVIEW_SIDE, IMAGE_PROCESS_PREVIEW_QUALITY);
+  const optimized = optimizedFull.length < sourceDataUrl.length;
+
+  return {
+    imageData: optimizedFull || sourceDataUrl,
+    imagePreviewData: optimizedPreview || optimizedFull || sourceDataUrl,
+    optimized
+  };
 }
 
 function fileToDataUrl(file) {
@@ -909,8 +982,42 @@ function fileToDataUrl(file) {
   });
 }
 
+function loadImageElement(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('failed loading image'));
+    image.src = dataUrl;
+  });
+}
+
+async function downscaleImageDataUrl(sourceDataUrl, maxSide, quality) {
+  const image = await loadImageElement(sourceDataUrl);
+  const width = image.naturalWidth || image.width;
+  const height = image.naturalHeight || image.height;
+  if (!width || !height) {
+    return sourceDataUrl;
+  }
+
+  const longestSide = Math.max(width, height);
+  const scale = longestSide > maxSide ? (maxSide / longestSide) : 1;
+  const targetWidth = Math.max(1, Math.round(width * scale));
+  const targetHeight = Math.max(1, Math.round(height * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
+  const context = canvas.getContext('2d');
+  if (!context) {
+    return sourceDataUrl;
+  }
+
+  context.drawImage(image, 0, 0, targetWidth, targetHeight);
+  return canvas.toDataURL('image/jpeg', quality);
+}
+
 function renderItemImagePreview() {
-  const imageData = sanitizeImageData(state.draftImageData);
+  const imageData = sanitizeImageData(state.draftImageData) || sanitizeImageData(state.draftImagePreviewData);
 
   if (!imageData) {
     elements.itemImagePreviewWrap.classList.add('hidden');

@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('inventoryAPI', {
   getItems: () => ipcRenderer.send('get-items'),
+  getItemImage: (itemId) => ipcRenderer.invoke('get-item-image', itemId),
   addItem: (data) => ipcRenderer.send('add-item', data),
   updateItem: (data) => ipcRenderer.send('update-item', data),
   deleteItem: (id) => ipcRenderer.send('delete-item', id),
