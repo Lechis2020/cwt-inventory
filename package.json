@@ -18,7 +18,6 @@
     "electron-builder": "^24.6.0"
   },
   "dependencies": {
-    "cwt-inventory": "file:",
     "exceljs": "^4.3.0"
   },
   "build": {
