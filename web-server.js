@@ -468,6 +468,11 @@ async function handleApi(req, res, parsedUrl) {
   const pathname = parsedUrl.pathname;
 
   try {
+    if (req.method === 'GET' && pathname === '/api/health') {
+      sendJson(res, 200, { ok: true, now: new Date().toISOString() });
+      return;
+    }
+
     if (req.method === 'GET' && pathname === '/api/items') {
       const includeImageData = parsedUrl.searchParams.get('full') === '1';
       sendJson(res, 200, { items: listClientItems({ includeImageData }) });

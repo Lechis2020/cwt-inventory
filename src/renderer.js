@@ -25,11 +25,13 @@ const IMAGE_PROCESS_MAX_SIDE = 1600;
 const IMAGE_PROCESS_PREVIEW_SIDE = 320;
 const IMAGE_PROCESS_QUALITY = 0.78;
 const IMAGE_PROCESS_PREVIEW_QUALITY = 0.72;
+const ITEMS_CACHE_KEY = 'cwt-items-cache-v1';
 
 document.addEventListener('DOMContentLoaded', () => {
   cacheElements();
   bindEvents();
   bindIpc();
+  hydrateItemsFromCache();
   window.inventoryAPI.getItems();
   loadAppSettings();
 });
@@ -162,11 +164,13 @@ function bindEvents() {
 function bindIpc() {
   window.inventoryAPI.onItemsList((items) => {
     state.items = normalizeItems(items);
+    persistItemsCache(state.items);
     renderAll();
   });
 
   window.inventoryAPI.onItemsUpdated((items) => {
     state.items = normalizeItems(items);
+    persistItemsCache(state.items);
     renderAll();
   });
 
@@ -208,6 +212,49 @@ function bindIpc() {
   window.inventoryAPI.onSettingsUpdated((settings) => {
     applyAppSettings(settings);
   });
+}
+
+function hydrateItemsFromCache() {
+  try {
+    const raw = window.localStorage.getItem(ITEMS_CACHE_KEY);
+    if (!raw) {
+      return;
+    }
+
+    const parsed = JSON.parse(raw);
+    const cachedItems = Array.isArray(parsed?.items) ? parsed.items : [];
+    if (cachedItems.length === 0) {
+      return;
+    }
+
+    state.items = normalizeItems(cachedItems);
+    renderAll();
+  } catch (_error) {
+    // Ignore cache parse/storage errors and continue with live data.
+  }
+}
+
+function persistItemsCache(items) {
+  try {
+    const payload = Array.isArray(items)
+      ? items.map((item) => {
+        const preview = sanitizeImageData(item.imagePreviewData) || sanitizeImageData(item.imageData);
+        return {
+          ...item,
+          imageData: '',
+          imagePreviewData: preview,
+          hasImage: Boolean(item.hasImage || preview)
+        };
+      })
+      : [];
+
+    window.localStorage.setItem(ITEMS_CACHE_KEY, JSON.stringify({
+      savedAt: new Date().toISOString(),
+      items: payload
+    }));
+  } catch (_error) {
+    // Ignore storage errors (e.g., private mode limits).
+  }
 }
 
 async function loadAppSettings() {
