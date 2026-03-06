@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CWT Inventory</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="background-orb orb-a"></div>
+  <div class="background-orb orb-b"></div>
+
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <h1 id="inventory-title">CWT Inventory</h1>
+        <p>Track stock levels, item value, and movement history.</p>
+      </div>
+      <div class="header-actions">
+        <button id="backup-now-btn" class="btn" type="button">Backup Now</button>
+        <button id="open-settings-btn" class="btn" type="button">Settings</button>
+        <button id="open-item-modal-btn" class="btn btn-primary" type="button">Add Item</button>
+      </div>
+    </header>
+
+    <section class="toolbar">
+      <input id="search-input" type="search" placeholder="Search by name, SKU, category, or location">
+      <button id="scan-search-btn" class="btn" type="button">Scan Lookup</button>
+      <label class="checkbox-filter" for="low-stock-only">
+        <input id="low-stock-only" type="checkbox">
+        <span>Low stock only</span>
+      </label>
+    </section>
+
+    <section id="stats" class="stats-grid"></section>
+
+    <section class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>SKU</th>
+            <th>Category</th>
+            <th>Location</th>
+            <th>Source</th>
+            <th>Machines</th>
+            <th>Qty</th>
+            <th>Reorder</th>
+            <th>Unit Price</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="items-body"></tbody>
+      </table>
+      <div id="empty-state" class="empty-state">No items yet. Click <strong>Add Item</strong> to start your inventory.</div>
+    </section>
+  </div>
+
+  <div id="item-modal" class="modal" aria-hidden="true">
+    <div class="modal-panel">
+      <button class="modal-close" data-close="item-modal" aria-label="Close">x</button>
+      <h2 id="item-modal-title">Add Item</h2>
+      <form id="item-form" class="form-grid">
+        <input id="item-id" type="hidden">
+
+        <label>
+          Name
+          <input id="item-name" type="text" required>
+        </label>
+
+        <label>
+          SKU
+          <div class="sku-input-row">
+            <input id="item-sku" type="text" placeholder="Optional but recommended">
+            <button id="scan-sku-btn" type="button" class="btn btn-small">Scan</button>
+          </div>
+        </label>
+
+        <label>
+          Category
+          <input id="item-category" type="text">
+        </label>
+
+        <label>
+          Location
+          <input id="item-location" type="text">
+        </label>
+
+        <label>
+          Source Link
+          <input id="item-source-url" type="url" placeholder="amazon.com or https://amazon.com/item">
+        </label>
+
+        <label class="full-width">
+          Used With Machines
+          <div class="machine-input-row">
+            <input id="machine-input" type="text" placeholder="Type machine name (example: Brother MFC-L3770CDW)">
+            <button id="add-machine-btn" type="button" class="btn btn-small">Add</button>
+          </div>
+          <div id="machine-list" class="machine-list"></div>
+        </label>
+
+        <label>
+          Initial Quantity
+          <input id="item-quantity" type="number" min="0" step="1" value="0">
+        </label>
+
+        <label>
+          Reorder Level
+          <input id="item-reorder-level" type="number" min="0" step="1" value="0">
+        </label>
+
+        <label>
+          Unit Price
+          <input id="item-unit-price" type="number" min="0" step="0.01" value="0">
+        </label>
+
+        <label class="full-width">
+          Notes
+          <textarea id="item-notes" rows="3" placeholder="Optional details"></textarea>
+        </label>
+
+        <label class="full-width">
+          Item Picture
+          <div class="image-source-buttons">
+            <button id="take-photo-btn" type="button" class="btn btn-small">Take Photo</button>
+            <button id="choose-photo-btn" type="button" class="btn btn-small">Choose File</button>
+          </div>
+          <input id="item-image-camera-input" class="hidden-input" type="file" accept="image/*" capture="environment">
+          <input id="item-image-input" class="hidden-input" type="file" accept="image/*">
+          <span class="image-upload-meta">Use Take Photo on mobile. JPG, PNG, GIF, or WebP. Max size 10 MB.</span>
+          <div id="item-image-preview-wrap" class="image-preview-wrap hidden">
+            <img id="item-image-preview" alt="Item picture preview">
+            <button id="clear-item-image-btn" type="button" class="btn btn-small">Remove Picture</button>
+          </div>
+        </label>
+
+        <div class="form-actions full-width">
+          <button type="button" class="btn" data-close="item-modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Item</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="stock-modal" class="modal" aria-hidden="true">
+    <div class="modal-panel">
+      <button class="modal-close" data-close="stock-modal" aria-label="Close">x</button>
+      <h2>Adjust Stock</h2>
+      <p id="stock-item-name" class="modal-subtitle"></p>
+      <form id="stock-form" class="form-grid">
+        <input id="stock-item-id" type="hidden">
+
+        <label>
+          Action
+          <select id="stock-type">
+            <option value="in">Stock In (add)</option>
+            <option value="out">Stock Out (remove)</option>
+            <option value="set">Set Exact Quantity</option>
+          </select>
+        </label>
+
+        <label>
+          Quantity
+          <input id="stock-quantity" type="number" min="0" step="1" required>
+        </label>
+
+        <label class="full-width">
+          Reason
+          <input id="stock-reason" type="text" placeholder="Purchase order, cycle count, damaged item, etc.">
+        </label>
+
+        <div class="form-actions full-width">
+          <button type="button" class="btn" data-close="stock-modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Apply</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="history-modal" class="modal" aria-hidden="true">
+    <div class="modal-panel wide">
+      <button class="modal-close" data-close="history-modal" aria-label="Close">x</button>
+      <h2 id="history-title">Movement History</h2>
+      <div id="history-list" class="history-list"></div>
+    </div>
+  </div>
+
+  <div id="scanner-modal" class="modal" aria-hidden="true">
+    <div class="modal-panel wide scanner-panel">
+      <button class="modal-close" data-close="scanner-modal" aria-label="Close">x</button>
+      <h2>Scan Barcode or QR</h2>
+      <p id="scanner-status" class="modal-subtitle">Point your camera at a barcode or QR code.</p>
+      <div class="scanner-video-wrap">
+        <video id="scanner-video" autoplay playsinline muted></video>
+        <div class="scanner-overlay"></div>
+      </div>
+      <div class="scanner-actions">
+        <button id="scanner-start-btn" type="button" class="btn btn-primary">Start Camera</button>
+        <button id="scanner-stop-btn" type="button" class="btn">Stop</button>
+        <button type="button" class="btn" data-close="scanner-modal">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="settings-modal" class="modal" aria-hidden="true">
+    <div class="modal-panel">
+      <button class="modal-close" data-close="settings-modal" aria-label="Close">x</button>
+      <h2>Settings</h2>
+      <form id="settings-form" class="form-grid">
+        <label class="full-width">
+          Company Name
+          <input id="company-name-input" type="text" maxlength="80" placeholder="CWT Inventory">
+        </label>
+
+        <div class="full-width settings-inline">
+          <button id="open-backups-folder-btn" class="btn" type="button">Open Backup Folder</button>
+          <span id="backup-info" class="muted"></span>
+        </div>
+
+        <div class="form-actions full-width">
+          <button type="button" class="btn" data-close="settings-modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Settings</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" aria-live="polite"></div>
+
+  <script src="web-bridge.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

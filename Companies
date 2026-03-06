@@ -1,0 +1,77 @@
+# CWT Machine Tracker
+
+## Overview
+A comprehensive system to track machines, companies, and service information with notes and printing capabilities.
+
+## Features
+
+- **Machine Database**: Import and manage machine information from Excel
+- **Company Management**: Add, remove, and search companies
+- **Service Information**: Store computer service tags and Express Service codes
+- **Call Notes**: Document notes from company calls
+- **Print Functionality**: Generate printable reports
+- **Search**: Find companies quickly
+
+## Getting Started
+
+1. **Import Data**: Load machines from `d:\Sales 2024.xlsx`
+2. **Add Companies**: Create new company entries with machine details
+3. **Document Calls**: Add timestamped notes for each company interaction
+4. **Track Services**: Record service tags and Express Service codes per machine
+
+## Data Structure
+
+```
+Company Name | Machine Model | Service Tag | Express Code | Call Notes | Last Updated
+```
+
+## Building with Electron
+
+### Prerequisites
+- Node.js and npm installed
+- Basic knowledge of HTML, CSS, and JavaScript
+
+### Project Structure
+```
+cWT-machine-tracker/
+├── main.js
+├── preload.js
+├── src/
+│   ├── index.html
+│   ├── styles.css
+│   └── renderer.js
+├── package.json
+└── dist/ (build output)
+```
+
+### Setup Steps
+1. Initialize Node project: `npm init -y`
+2. Install Electron: `npm install electron --save-dev`
+3. Create main process file (`main.js`)
+4. Build UI with HTML/CSS
+5. Use `electron-builder` for `.exe` packaging
+
+### Key Dependencies
+- `electron-builder`: Generate Windows executable
+- `sqlite3` or `better-sqlite3`: Data storage
+- `exceljs`: Parse Excel files
+
+## package.json
+```json
+{
+  "name": "cwt-machine-tracker",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^latest",
+    "electron-builder": "^latest"
+  },
+  "dependencies": {
+    "exceljs": "^4.3.0"
+  }
+}
+```
