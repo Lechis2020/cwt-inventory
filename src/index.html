@@ -17,6 +17,7 @@
         <p>Track stock levels, item value, and movement history.</p>
       </div>
       <div class="header-actions">
+        <button id="hard-refresh-btn" class="btn" type="button">Hard Refresh</button>
         <button id="backup-now-btn" class="btn" type="button">Backup Now</button>
         <button id="open-settings-btn" class="btn" type="button">Settings</button>
         <button id="open-machine-modal-btn" class="btn" type="button">Machines</button>
@@ -254,14 +255,30 @@
             <label class="full-width">
               Add Item To Machine
               <div class="machine-kit-input-row">
-                <select id="machine-kit-item-select"></select>
+                <input id="machine-kit-item-search" type="search" placeholder="Search item by name, SKU, category, or location">
                 <input id="machine-kit-item-qty" type="number" min="1" step="1" value="1">
                 <button id="add-machine-kit-item-btn" type="button" class="btn btn-small">Add Item</button>
               </div>
+              <div id="machine-kit-item-search-results" class="machine-kit-search-results"></div>
               <span class="image-upload-meta">Quantity is how many units of that item one machine uses.</span>
             </label>
 
             <div id="machine-kit-components" class="machine-kit-components full-width"></div>
+
+            <label class="full-width">
+              Machine Picture
+              <div class="image-source-buttons">
+                <button id="take-machine-photo-btn" type="button" class="btn btn-small">Take Photo</button>
+                <button id="choose-machine-photo-btn" type="button" class="btn btn-small">Choose File</button>
+              </div>
+              <input id="machine-kit-image-camera-input" class="hidden-input" type="file" accept="image/*" capture="environment">
+              <input id="machine-kit-image-input" class="hidden-input" type="file" accept="image/*">
+              <span class="image-upload-meta">JPG, PNG, GIF, or WebP. Max size 10 MB.</span>
+              <div id="machine-kit-image-preview-wrap" class="image-preview-wrap hidden">
+                <img id="machine-kit-image-preview" alt="Machine picture preview">
+                <button id="clear-machine-kit-image-btn" type="button" class="btn btn-small">Remove Picture</button>
+              </div>
+            </label>
 
             <div class="form-actions full-width">
               <button id="clear-machine-kit-btn" type="button" class="btn">Clear</button>

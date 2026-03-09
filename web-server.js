@@ -148,12 +148,17 @@ function normalizeMachineKit(rawMachineKit) {
   }
 
   const now = new Date().toISOString();
+  const imageData = sanitizeImageData(rawMachineKit.imageData);
+  const imagePreviewData = sanitizeImageData(rawMachineKit.imagePreviewData);
   return {
     id: typeof rawMachineKit.id === 'string' && rawMachineKit.id.trim()
       ? rawMachineKit.id.trim()
       : createId('machine'),
     name,
     components: sanitizeMachineKitComponents(rawMachineKit.components),
+    imageData,
+    imagePreviewData,
+    hasImage: Boolean(rawMachineKit.hasImage || imageData || imagePreviewData),
     createdAt: typeof rawMachineKit.createdAt === 'string' ? rawMachineKit.createdAt : now,
     updatedAt: typeof rawMachineKit.updatedAt === 'string' ? rawMachineKit.updatedAt : now
   };
@@ -264,10 +269,15 @@ function listClientItems(options = {}) {
 }
 
 function toClientMachineKit(machineKit) {
+  const imageData = sanitizeImageData(machineKit?.imageData);
+  const imagePreviewData = sanitizeImageData(machineKit?.imagePreviewData);
   return {
     id: machineKit.id,
     name: sanitizeMachineKitName(machineKit.name),
     components: sanitizeMachineKitComponents(machineKit.components),
+    imageData,
+    imagePreviewData,
+    hasImage: Boolean(machineKit?.hasImage || imageData || imagePreviewData),
     createdAt: machineKit.createdAt,
     updatedAt: machineKit.updatedAt
   };
@@ -586,6 +596,9 @@ function addMachineKit(payload) {
     id: createId('machine'),
     name,
     components,
+    imageData: sanitizeImageData(payload?.imageData),
+    imagePreviewData: sanitizeImageData(payload?.imagePreviewData),
+    hasImage: Boolean(sanitizeImageData(payload?.imageData) || sanitizeImageData(payload?.imagePreviewData)),
     createdAt: now,
     updatedAt: now
   };
@@ -621,6 +634,13 @@ function updateMachineKit(machineKitId, payload) {
 
   machineKit.name = name;
   machineKit.components = components;
+  const hasImageFields = hasOwn(payload, 'imageData') || hasOwn(payload, 'imagePreviewData');
+  const shouldUpdateImage = payload?.imageUpdated === true || (payload?.imageUpdated == null && hasImageFields);
+  if (shouldUpdateImage) {
+    machineKit.imageData = sanitizeImageData(payload?.imageData);
+    machineKit.imagePreviewData = sanitizeImageData(payload?.imagePreviewData);
+    machineKit.hasImage = Boolean(machineKit.imageData || machineKit.imagePreviewData);
+  }
   machineKit.updatedAt = new Date().toISOString();
   saveDatabase();
 
@@ -1005,8 +1025,15 @@ function handleStatic(res, pathname) {
     return;
   }
 
+  const cacheControl = pathname === '/'
+    ? 'no-store, max-age=0, must-revalidate'
+    : 'no-cache, max-age=0, must-revalidate';
+
   res.writeHead(200, {
-    'Content-Type': getMimeType(resolved)
+    'Content-Type': getMimeType(resolved),
+    'Cache-Control': cacheControl,
+    Pragma: 'no-cache',
+    Expires: '0'
   });
   fs.createReadStream(resolved).pipe(res);
 }

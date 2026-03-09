@@ -9,6 +9,9 @@ const state = {
   thumbnailLoadIds: new Set(),
   draftMachines: [],
   draftMachineKitComponents: [],
+  draftMachineKitImageData: '',
+  draftMachineKitImagePreviewData: '',
+  draftMachineKitImageChanged: false,
   scanTarget: null,
   scannerStream: null,
   scannerRafId: null,
@@ -44,6 +47,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 function cacheElements() {
   elements.inventoryTitle = document.getElementById('inventory-title');
+  elements.hardRefreshBtn = document.getElementById('hard-refresh-btn');
   elements.backupNowBtn = document.getElementById('backup-now-btn');
   elements.openSettingsBtn = document.getElementById('open-settings-btn');
   elements.openMachineModalBtn = document.getElementById('open-machine-modal-btn');
@@ -110,10 +114,18 @@ function cacheElements() {
   elements.machineKitFormTitle = document.getElementById('machine-kit-form-title');
   elements.machineKitId = document.getElementById('machine-kit-id');
   elements.machineKitName = document.getElementById('machine-kit-name');
-  elements.machineKitItemSelect = document.getElementById('machine-kit-item-select');
+  elements.machineKitItemSearch = document.getElementById('machine-kit-item-search');
+  elements.machineKitItemSearchResults = document.getElementById('machine-kit-item-search-results');
   elements.machineKitItemQty = document.getElementById('machine-kit-item-qty');
   elements.addMachineKitItemBtn = document.getElementById('add-machine-kit-item-btn');
   elements.machineKitComponents = document.getElementById('machine-kit-components');
+  elements.machineKitImageInput = document.getElementById('machine-kit-image-input');
+  elements.machineKitImageCameraInput = document.getElementById('machine-kit-image-camera-input');
+  elements.takeMachinePhotoBtn = document.getElementById('take-machine-photo-btn');
+  elements.chooseMachinePhotoBtn = document.getElementById('choose-machine-photo-btn');
+  elements.machineKitImagePreviewWrap = document.getElementById('machine-kit-image-preview-wrap');
+  elements.machineKitImagePreview = document.getElementById('machine-kit-image-preview');
+  elements.clearMachineKitImageBtn = document.getElementById('clear-machine-kit-image-btn');
   elements.clearMachineKitBtn = document.getElementById('clear-machine-kit-btn');
 
   elements.toast = document.getElementById('toast');
@@ -125,6 +137,9 @@ function bindEvents() {
     openItemModalButton.addEventListener('click', () => {
       openItemModal();
     });
+  }
+  if (elements.hardRefreshBtn) {
+    elements.hardRefreshBtn.addEventListener('click', onHardRefreshClicked);
   }
   if (elements.openMachineModalBtn) {
     elements.openMachineModalBtn.addEventListener('click', openMachineModal);
@@ -176,6 +191,18 @@ function bindEvents() {
   if (elements.addMachineKitItemBtn) {
     elements.addMachineKitItemBtn.addEventListener('click', addMachineKitComponentFromInput);
   }
+  if (elements.machineKitItemSearch) {
+    elements.machineKitItemSearch.addEventListener('input', onMachineKitItemSearchInput);
+    elements.machineKitItemSearch.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        addMachineKitComponentFromInput();
+      }
+    });
+  }
+  if (elements.machineKitItemSearchResults) {
+    elements.machineKitItemSearchResults.addEventListener('click', onMachineKitItemSearchResultsClick);
+  }
   if (elements.machineKitItemQty) {
     elements.machineKitItemQty.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
@@ -183,6 +210,25 @@ function bindEvents() {
         addMachineKitComponentFromInput();
       }
     });
+  }
+  if (elements.takeMachinePhotoBtn) {
+    elements.takeMachinePhotoBtn.addEventListener('click', () => {
+      elements.machineKitImageCameraInput.click();
+    });
+  }
+  if (elements.chooseMachinePhotoBtn) {
+    elements.chooseMachinePhotoBtn.addEventListener('click', () => {
+      elements.machineKitImageInput.click();
+    });
+  }
+  if (elements.machineKitImageInput) {
+    elements.machineKitImageInput.addEventListener('change', onMachineKitImageSelected);
+  }
+  if (elements.machineKitImageCameraInput) {
+    elements.machineKitImageCameraInput.addEventListener('change', onMachineKitImageSelected);
+  }
+  if (elements.clearMachineKitImageBtn) {
+    elements.clearMachineKitImageBtn.addEventListener('click', clearDraftMachineKitImage);
   }
   if (elements.machineKitComponents) {
     elements.machineKitComponents.addEventListener('click', onMachineKitComponentsClick);
@@ -438,6 +484,31 @@ async function onOpenBackupsFolderClicked() {
   }
 }
 
+async function onHardRefreshClicked() {
+  try {
+    window.localStorage.removeItem(ITEMS_CACHE_KEY);
+  } catch (_error) {
+    // Ignore storage permission failures.
+  }
+
+  if (typeof window.caches !== 'undefined') {
+    try {
+      const cacheKeys = await window.caches.keys();
+      await Promise.all(cacheKeys.map((key) => window.caches.delete(key)));
+    } catch (_error) {
+      // Ignore Cache API failures and continue reload.
+    }
+  }
+
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set('refresh', Date.now().toString());
+    window.location.replace(url.toString());
+  } catch (_error) {
+    window.location.reload();
+  }
+}
+
 function onRefreshItemsClicked() {
   if (!elements.refreshItemsFileInput) {
     showToast('Refresh is unavailable in this build.', true);
@@ -541,6 +612,13 @@ function normalizeMachineKits(machineKits) {
       id: typeof machineKit?.id === 'string' ? machineKit.id : '',
       name: typeof machineKit?.name === 'string' ? machineKit.name.trim().replace(/\s+/g, ' ') : '',
       components: sanitizeMachineKitComponents(machineKit?.components),
+      imageData: sanitizeImageData(machineKit?.imageData),
+      imagePreviewData: sanitizeImageData(machineKit?.imagePreviewData),
+      hasImage: Boolean(
+        machineKit?.hasImage
+        || sanitizeImageData(machineKit?.imageData)
+        || sanitizeImageData(machineKit?.imagePreviewData)
+      ),
       createdAt: machineKit?.createdAt || '',
       updatedAt: machineKit?.updatedAt || ''
     }))
@@ -664,35 +742,128 @@ function resetMachineKitForm() {
   elements.machineKitName.value = '';
   elements.machineKitFormTitle.textContent = 'Add Machine';
   elements.machineKitItemQty.value = '1';
+  if (elements.machineKitItemSearch) {
+    elements.machineKitItemSearch.value = '';
+    delete elements.machineKitItemSearch.dataset.selectedItemId;
+  }
+  if (elements.machineKitImageInput) {
+    elements.machineKitImageInput.value = '';
+  }
+  if (elements.machineKitImageCameraInput) {
+    elements.machineKitImageCameraInput.value = '';
+  }
   state.draftMachineKitComponents = [];
+  state.draftMachineKitImageData = '';
+  state.draftMachineKitImagePreviewData = '';
+  state.draftMachineKitImageChanged = false;
   renderMachineKitItemOptions();
   renderDraftMachineKitComponents();
+  renderMachineKitImagePreview();
 }
 
 function renderMachineKitItemOptions() {
-  if (!elements.machineKitItemSelect) {
+  if (!elements.machineKitItemSearch || !elements.machineKitItemSearchResults) {
     return;
   }
 
-  const previousSelection = elements.machineKitItemSelect.value;
+  const query = elements.machineKitItemSearch.value.trim().toLowerCase();
   const sortedItems = [...state.items]
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 
   if (sortedItems.length === 0) {
-    elements.machineKitItemSelect.innerHTML = '<option value="">Add inventory items first</option>';
-    elements.machineKitItemSelect.disabled = true;
+    elements.machineKitItemSearchResults.innerHTML = '<div class="machine-kit-search-empty">Add inventory items first.</div>';
     return;
   }
 
-  elements.machineKitItemSelect.disabled = false;
-  elements.machineKitItemSelect.innerHTML = sortedItems
-    .map((item) => `<option value="${item.id}">${escapeHtml(item.name)} (Stock: ${item.quantity})</option>`)
-    .join('');
+  const selectedItemId = elements.machineKitItemSearch.dataset.selectedItemId || '';
+  const selectedItem = sortedItems.find((item) => item.id === selectedItemId);
+  if (selectedItem && elements.machineKitItemSearch.value.trim() === selectedItem.name) {
+    elements.machineKitItemSearchResults.innerHTML = `<div class="machine-kit-search-selected">Selected: ${escapeHtml(selectedItem.name)} (Stock: ${selectedItem.quantity})</div>`;
+    return;
+  }
 
-  const hasPrevious = sortedItems.some((item) => item.id === previousSelection);
-  elements.machineKitItemSelect.value = hasPrevious
-    ? previousSelection
-    : sortedItems[0].id;
+  delete elements.machineKitItemSearch.dataset.selectedItemId;
+
+  if (!query) {
+    elements.machineKitItemSearchResults.innerHTML = '<div class="machine-kit-search-empty">Type to search items.</div>';
+    return;
+  }
+
+  const matches = sortedItems
+    .filter((item) => {
+      const haystack = [item.name, item.sku, item.category, item.location]
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(query);
+    })
+    .slice(0, 12);
+
+  if (matches.length === 0) {
+    elements.machineKitItemSearchResults.innerHTML = '<div class="machine-kit-search-empty">No matching items.</div>';
+    return;
+  }
+
+  elements.machineKitItemSearchResults.innerHTML = matches.map((item) => `
+    <button type="button" class="machine-kit-search-option" data-machine-search-id="${item.id}">
+      <strong>${escapeHtml(item.name)}</strong>
+      <span>${escapeHtml(item.sku || item.category || 'No SKU')} | Stock ${item.quantity}</span>
+    </button>
+  `).join('');
+}
+
+function onMachineKitItemSearchInput() {
+  renderMachineKitItemOptions();
+}
+
+function onMachineKitItemSearchResultsClick(event) {
+  const button = event.target.closest('button[data-machine-search-id]');
+  if (!button) {
+    return;
+  }
+
+  const itemId = button.dataset.machineSearchId;
+  const item = state.items.find((entry) => entry.id === itemId);
+  if (!item || !elements.machineKitItemSearch) {
+    return;
+  }
+
+  elements.machineKitItemSearch.value = item.name;
+  elements.machineKitItemSearch.dataset.selectedItemId = item.id;
+  renderMachineKitItemOptions();
+}
+
+function resolveMachineKitSearchSelection() {
+  if (!elements.machineKitItemSearch) {
+    return '';
+  }
+
+  const selectedItemId = elements.machineKitItemSearch.dataset.selectedItemId || '';
+  if (selectedItemId && state.items.some((entry) => entry.id === selectedItemId)) {
+    return selectedItemId;
+  }
+
+  const query = elements.machineKitItemSearch.value.trim().toLowerCase();
+  if (!query) {
+    return '';
+  }
+
+  const exactMatches = state.items.filter((item) => (
+    item.name.toLowerCase() === query
+    || item.sku.toLowerCase() === query
+  ));
+  if (exactMatches.length === 1) {
+    return exactMatches[0].id;
+  }
+
+  const containsMatches = state.items.filter((item) => {
+    const haystack = [item.name, item.sku, item.category, item.location].join(' ').toLowerCase();
+    return haystack.includes(query);
+  });
+  if (containsMatches.length === 1) {
+    return containsMatches[0].id;
+  }
+
+  return '';
 }
 
 function getMachineKitBuildableCount(machineKit) {
@@ -729,17 +900,26 @@ function renderMachineKits() {
 
   elements.machineKitsList.innerHTML = sortedMachineKits.map((machineKit) => {
     const buildable = getMachineKitBuildableCount(machineKit);
+    const thumbnail = sanitizeImageData(machineKit.imagePreviewData) || sanitizeImageData(machineKit.imageData);
     const componentsMarkup = machineKit.components.map((component) => {
       const item = state.items.find((entry) => entry.id === component.itemId);
       const label = item ? item.name : 'Missing item';
       const stockText = item ? `Stock ${item.quantity}` : 'Missing';
       return `<span class="machine-kit-component">${escapeHtml(label)} x${component.quantity} (${stockText})</span>`;
     }).join('');
+    const imageMarkup = thumbnail
+      ? `<img class="machine-kit-thumb" src="${thumbnail}" loading="lazy" alt="${escapeHtml(machineKit.name)} picture">`
+      : machineKit.hasImage
+        ? '<div class="machine-kit-thumb placeholder">Photo</div>'
+        : '<div class="machine-kit-thumb placeholder">No image</div>';
 
     return `
       <article class="machine-kit-card">
         <div class="machine-kit-top">
-          <div class="machine-kit-name">${escapeHtml(machineKit.name)}</div>
+          <div class="machine-kit-title-cell">
+            ${imageMarkup}
+            <div class="machine-kit-name">${escapeHtml(machineKit.name)}</div>
+          </div>
         </div>
         <p class="machine-kit-buildable">Can build now: ${buildable}</p>
         <div class="machine-kit-component-list">${componentsMarkup}</div>
@@ -781,9 +961,9 @@ function renderDraftMachineKitComponents() {
 }
 
 function addMachineKitComponentFromInput() {
-  const itemId = elements.machineKitItemSelect.value;
+  const itemId = resolveMachineKitSearchSelection();
   if (!itemId) {
-    showToast('Select an inventory item first.', true);
+    showToast('Search and select an inventory item first.', true);
     return;
   }
 
@@ -805,6 +985,11 @@ function addMachineKitComponentFromInput() {
 
   state.draftMachineKitComponents = sanitizeMachineKitComponents(state.draftMachineKitComponents);
   elements.machineKitItemQty.value = '1';
+  if (elements.machineKitItemSearch) {
+    elements.machineKitItemSearch.value = '';
+    delete elements.machineKitItemSearch.dataset.selectedItemId;
+  }
+  renderMachineKitItemOptions();
   renderDraftMachineKitComponents();
 }
 
@@ -838,7 +1023,14 @@ function onMachineKitFormSubmit(event) {
     return;
   }
 
-  if (!payload.id) {
+  const isUpdate = Boolean(payload.id);
+  if (!isUpdate || state.draftMachineKitImageChanged) {
+    payload.imageData = state.draftMachineKitImageData;
+    payload.imagePreviewData = state.draftMachineKitImagePreviewData;
+    payload.imageUpdated = true;
+  }
+
+  if (!isUpdate) {
     if (typeof window.inventoryAPI.addMachineKit !== 'function') {
       showToast('Machine feature is unavailable in this build.', true);
       return;
@@ -873,7 +1065,22 @@ function onMachineKitsListClick(event) {
     elements.machineKitName.value = machineKit.name;
     elements.machineKitFormTitle.textContent = 'Edit Machine';
     state.draftMachineKitComponents = sanitizeMachineKitComponents(machineKit.components);
+    state.draftMachineKitImageData = sanitizeImageData(machineKit.imageData);
+    state.draftMachineKitImagePreviewData = sanitizeImageData(machineKit.imagePreviewData);
+    state.draftMachineKitImageChanged = false;
+    if (elements.machineKitItemSearch) {
+      elements.machineKitItemSearch.value = '';
+      delete elements.machineKitItemSearch.dataset.selectedItemId;
+    }
+    if (elements.machineKitImageInput) {
+      elements.machineKitImageInput.value = '';
+    }
+    if (elements.machineKitImageCameraInput) {
+      elements.machineKitImageCameraInput.value = '';
+    }
+    renderMachineKitItemOptions();
     renderDraftMachineKitComponents();
+    renderMachineKitImagePreview();
     elements.machineKitName.focus();
     return;
   }
@@ -911,6 +1118,74 @@ function onMachineKitsListClick(event) {
       quantity
     });
   }
+}
+
+function clearDraftMachineKitImage() {
+  state.draftMachineKitImageData = '';
+  state.draftMachineKitImagePreviewData = '';
+  state.draftMachineKitImageChanged = true;
+
+  if (elements.machineKitImageInput) {
+    elements.machineKitImageInput.value = '';
+  }
+  if (elements.machineKitImageCameraInput) {
+    elements.machineKitImageCameraInput.value = '';
+  }
+
+  renderMachineKitImagePreview();
+}
+
+async function onMachineKitImageSelected(event) {
+  const file = event.target.files?.[0];
+  if (!file) {
+    return;
+  }
+
+  if (!file.type.startsWith('image/')) {
+    showToast('Only image files are allowed.', true);
+    event.target.value = '';
+    return;
+  }
+
+  const maxMb = 10;
+  const maxBytes = maxMb * 1024 * 1024;
+  if (file.size > maxBytes) {
+    showToast(`Image is too large. Use a file under ${maxMb} MB.`, true);
+    event.target.value = '';
+    return;
+  }
+
+  try {
+    const processed = await processImageUpload(file);
+    state.draftMachineKitImageData = processed.imageData;
+    state.draftMachineKitImagePreviewData = processed.imagePreviewData || processed.imageData;
+    state.draftMachineKitImageChanged = true;
+    renderMachineKitImagePreview();
+    if (processed.optimized) {
+      showToast('Photo optimized for faster loading.');
+    }
+  } catch (_error) {
+    showToast('Could not load image.', true);
+    event.target.value = '';
+  }
+}
+
+function renderMachineKitImagePreview() {
+  if (!elements.machineKitImagePreviewWrap || !elements.machineKitImagePreview) {
+    return;
+  }
+
+  const imageData = sanitizeImageData(state.draftMachineKitImageData)
+    || sanitizeImageData(state.draftMachineKitImagePreviewData);
+
+  if (!imageData) {
+    elements.machineKitImagePreviewWrap.classList.add('hidden');
+    elements.machineKitImagePreview.removeAttribute('src');
+    return;
+  }
+
+  elements.machineKitImagePreview.src = imageData;
+  elements.machineKitImagePreviewWrap.classList.remove('hidden');
 }
 
 function renderAll() {
