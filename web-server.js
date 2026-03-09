@@ -10,15 +10,16 @@ const DATA_FILE = path.join(BASE_DATA_DIR, 'inventory-data.json');
 const SETTINGS_FILE = path.join(BASE_DATA_DIR, 'app-settings.json');
 const BACKUP_DIR = path.join(BASE_DATA_DIR, 'backups');
 const AUTO_BACKUP_CHECK_INTERVAL_MS = 30 * 60 * 1000;
+const MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024;
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
 
-let database = { items: [], movements: [] };
+let database = { items: [], movements: [], machineKits: [] };
 let appSettings = { companyName: 'CWT Inventory', lastAutoBackupDate: '' };
 
 function createDefaultDatabase() {
-  return { items: [], movements: [] };
+  return { items: [], movements: [], machineKits: [] };
 }
 
 function createDefaultSettings() {
@@ -102,6 +103,62 @@ function sanitizeMachineList(machines) {
   return result;
 }
 
+function sanitizeMachineKitName(name) {
+  if (typeof name !== 'string') {
+    return '';
+  }
+
+  return name.trim().replace(/\s+/g, ' ');
+}
+
+function sanitizeMachineKitComponents(components) {
+  if (!Array.isArray(components)) {
+    return [];
+  }
+
+  const totals = new Map();
+  components.forEach((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return;
+    }
+
+    const itemId = typeof entry.itemId === 'string' ? entry.itemId.trim() : '';
+    const quantity = Math.max(0, Math.floor(parseNumber(entry.quantity, 0)));
+    if (!itemId || quantity <= 0) {
+      return;
+    }
+
+    totals.set(itemId, (totals.get(itemId) || 0) + quantity);
+  });
+
+  return Array.from(totals.entries()).map(([itemId, quantity]) => ({
+    itemId,
+    quantity
+  }));
+}
+
+function normalizeMachineKit(rawMachineKit) {
+  if (!rawMachineKit || typeof rawMachineKit !== 'object') {
+    return null;
+  }
+
+  const name = sanitizeMachineKitName(rawMachineKit.name);
+  if (!name) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  return {
+    id: typeof rawMachineKit.id === 'string' && rawMachineKit.id.trim()
+      ? rawMachineKit.id.trim()
+      : createId('machine'),
+    name,
+    components: sanitizeMachineKitComponents(rawMachineKit.components),
+    createdAt: typeof rawMachineKit.createdAt === 'string' ? rawMachineKit.createdAt : now,
+    updatedAt: typeof rawMachineKit.updatedAt === 'string' ? rawMachineKit.updatedAt : now
+  };
+}
+
 function normalizeDatabase(data) {
   if (!data || typeof data !== 'object') {
     return createDefaultDatabase();
@@ -117,7 +174,12 @@ function normalizeDatabase(data) {
         imagePreviewData: sanitizeImageData(item?.imagePreviewData)
       }))
       : [],
-    movements: Array.isArray(data.movements) ? data.movements : []
+    movements: Array.isArray(data.movements) ? data.movements : [],
+    machineKits: Array.isArray(data.machineKits)
+      ? data.machineKits
+        .map((machineKit) => normalizeMachineKit(machineKit))
+        .filter(Boolean)
+      : []
   };
 }
 
@@ -201,6 +263,20 @@ function listClientItems(options = {}) {
   return database.items.map((item) => toClientItem(item, options));
 }
 
+function toClientMachineKit(machineKit) {
+  return {
+    id: machineKit.id,
+    name: sanitizeMachineKitName(machineKit.name),
+    components: sanitizeMachineKitComponents(machineKit.components),
+    createdAt: machineKit.createdAt,
+    updatedAt: machineKit.updatedAt
+  };
+}
+
+function listClientMachineKits() {
+  return database.machineKits.map((machineKit) => toClientMachineKit(machineKit));
+}
+
 function createId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
 }
@@ -282,7 +358,7 @@ function readRequestBody(req) {
     let raw = '';
     req.on('data', (chunk) => {
       raw += chunk.toString('utf-8');
-      if (raw.length > 10 * 1024 * 1024) {
+      if (raw.length > MAX_REQUEST_BODY_BYTES) {
         reject(new Error('Request body too large.'));
       }
     });
@@ -464,6 +540,227 @@ function adjustStock(itemId, payload) {
   return { item };
 }
 
+function findItem(itemId) {
+  return database.items.find((item) => item.id === itemId);
+}
+
+function findMachineKit(machineKitId) {
+  return database.machineKits.find((machineKit) => machineKit.id === machineKitId);
+}
+
+function isDuplicateMachineKitName(name, excludeId = null) {
+  const normalizedName = sanitizeMachineKitName(name).toLowerCase();
+  if (!normalizedName) {
+    return false;
+  }
+
+  return database.machineKits.some((machineKit) => {
+    if (excludeId && machineKit.id === excludeId) {
+      return false;
+    }
+    return sanitizeMachineKitName(machineKit.name).toLowerCase() === normalizedName;
+  });
+}
+
+function addMachineKit(payload) {
+  const name = sanitizeMachineKitName(payload?.name);
+  if (!name) {
+    return { error: 'Machine name is required.' };
+  }
+  if (isDuplicateMachineKitName(name)) {
+    return { error: 'Machine already exists. Use a unique machine name.' };
+  }
+
+  const components = sanitizeMachineKitComponents(payload?.components);
+  if (components.length === 0) {
+    return { error: 'Add at least one inventory item to this machine.' };
+  }
+
+  const missingComponent = components.find((component) => !findItem(component.itemId));
+  if (missingComponent) {
+    return { error: 'One or more linked items no longer exist. Refresh and try again.' };
+  }
+
+  const now = new Date().toISOString();
+  const machineKit = {
+    id: createId('machine'),
+    name,
+    components,
+    createdAt: now,
+    updatedAt: now
+  };
+
+  database.machineKits.push(machineKit);
+  saveDatabase();
+  return { machineKit };
+}
+
+function updateMachineKit(machineKitId, payload) {
+  const machineKit = findMachineKit(machineKitId);
+  if (!machineKit) {
+    return { error: 'Machine not found.' };
+  }
+
+  const name = sanitizeMachineKitName(payload?.name);
+  if (!name) {
+    return { error: 'Machine name is required.' };
+  }
+  if (isDuplicateMachineKitName(name, machineKitId)) {
+    return { error: 'Machine already exists. Use a unique machine name.' };
+  }
+
+  const components = sanitizeMachineKitComponents(payload?.components);
+  if (components.length === 0) {
+    return { error: 'Add at least one inventory item to this machine.' };
+  }
+
+  const missingComponent = components.find((component) => !findItem(component.itemId));
+  if (missingComponent) {
+    return { error: 'One or more linked items no longer exist. Refresh and try again.' };
+  }
+
+  machineKit.name = name;
+  machineKit.components = components;
+  machineKit.updatedAt = new Date().toISOString();
+  saveDatabase();
+
+  return { machineKit };
+}
+
+function deleteMachineKit(machineKitId) {
+  const beforeCount = database.machineKits.length;
+  database.machineKits = database.machineKits.filter((machineKit) => machineKit.id !== machineKitId);
+  if (database.machineKits.length === beforeCount) {
+    return { error: 'Machine not found.' };
+  }
+  saveDatabase();
+  return { id: machineKitId };
+}
+
+function removeItemFromMachineKits(itemId) {
+  let changed = false;
+
+  database.machineKits = database.machineKits
+    .map((machineKit) => {
+      const filteredComponents = machineKit.components.filter((component) => component.itemId !== itemId);
+      if (filteredComponents.length !== machineKit.components.length) {
+        changed = true;
+        return {
+          ...machineKit,
+          components: filteredComponents,
+          updatedAt: new Date().toISOString()
+        };
+      }
+      return machineKit;
+    })
+    .filter((machineKit) => {
+      if (machineKit.components.length === 0) {
+        changed = true;
+        return false;
+      }
+      return true;
+    });
+
+  return changed;
+}
+
+function getMachineKitRequirements(machineKit, machineQuantity) {
+  const requirements = [];
+
+  for (const component of machineKit.components) {
+    const item = findItem(component.itemId);
+    if (!item) {
+      return {
+        error: `Machine "${machineKit.name}" references a missing item. Edit this machine and remove the missing part.`
+      };
+    }
+
+    const requiredQuantity = component.quantity * machineQuantity;
+    if (requiredQuantity > item.quantity) {
+      return {
+        error: `Not enough stock for "${item.name}". Need ${requiredQuantity}, available ${item.quantity}.`
+      };
+    }
+
+    requirements.push({
+      item,
+      requiredQuantity
+    });
+  }
+
+  return { requirements };
+}
+
+function sellMachineKit(machineKitId, payload) {
+  const machineKit = findMachineKit(machineKitId);
+  if (!machineKit) {
+    return { error: 'Machine not found.' };
+  }
+
+  const machineQuantity = Math.max(0, Math.floor(parseNumber(payload?.quantity, 0)));
+  if (machineQuantity <= 0) {
+    return { error: 'Machine quantity must be greater than zero.' };
+  }
+
+  const components = sanitizeMachineKitComponents(machineKit.components);
+  if (components.length === 0) {
+    return { error: 'This machine has no linked inventory items.' };
+  }
+
+  const safeMachineKit = {
+    ...machineKit,
+    name: sanitizeMachineKitName(machineKit.name),
+    components
+  };
+
+  const requirementsResult = getMachineKitRequirements(safeMachineKit, machineQuantity);
+  if (requirementsResult.error) {
+    return requirementsResult;
+  }
+
+  const now = new Date().toISOString();
+  const reason = (payload?.reason || '').trim() || `Machine sold: ${safeMachineKit.name} x${machineQuantity}`;
+
+  requirementsResult.requirements.forEach(({ item, requiredQuantity }) => {
+    const previousQuantity = item.quantity;
+    const newQuantity = previousQuantity - requiredQuantity;
+    item.quantity = newQuantity;
+    item.updatedAt = now;
+
+    database.movements.push({
+      id: createId('move'),
+      itemId: item.id,
+      type: 'out',
+      quantity: requiredQuantity,
+      previousQuantity,
+      newQuantity,
+      reason,
+      machineKitId: safeMachineKit.id,
+      machineKitName: safeMachineKit.name,
+      machineQuantity,
+      timestamp: now
+    });
+  });
+
+  saveDatabase();
+  return { machineKit, machineQuantity };
+}
+
+function refreshItemsDatabase(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object' || !Array.isArray(snapshot.items)) {
+    return { error: 'Invalid inventory backup file. Choose inventory-data.json.' };
+  }
+
+  database = normalizeDatabase(snapshot);
+  saveDatabase();
+
+  return {
+    itemCount: database.items.length,
+    movementCount: database.movements.length,
+    machineKitCount: database.machineKits.length
+  };
+}
+
 async function handleApi(req, res, parsedUrl) {
   const pathname = parsedUrl.pathname;
 
@@ -479,6 +776,11 @@ async function handleApi(req, res, parsedUrl) {
       return;
     }
 
+    if (req.method === 'GET' && pathname === '/api/machine-kits') {
+      sendJson(res, 200, { machineKits: listClientMachineKits() });
+      return;
+    }
+
     if (req.method === 'POST' && pathname === '/api/items') {
       const payload = await readRequestBody(req);
       const result = addItem(payload);
@@ -490,6 +792,21 @@ async function handleApi(req, res, parsedUrl) {
         success: true,
         item: toClientItem(result.item, { includeImageData: true }),
         items: listClientItems()
+      });
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/machine-kits') {
+      const payload = await readRequestBody(req);
+      const result = addMachineKit(payload);
+      if (result.error) {
+        sendJson(res, 400, { error: result.error });
+        return;
+      }
+      sendJson(res, 200, {
+        success: true,
+        machineKit: toClientMachineKit(result.machineKit),
+        machineKits: listClientMachineKits()
       });
       return;
     }
@@ -535,8 +852,14 @@ async function handleApi(req, res, parsedUrl) {
         return;
       }
       database.movements = database.movements.filter((movement) => movement.itemId !== itemId);
+      removeItemFromMachineKits(itemId);
       saveDatabase();
-      sendJson(res, 200, { success: true, id: itemId, items: listClientItems() });
+      sendJson(res, 200, {
+        success: true,
+        id: itemId,
+        items: listClientItems(),
+        machineKits: listClientMachineKits()
+      });
       return;
     }
 
@@ -552,6 +875,54 @@ async function handleApi(req, res, parsedUrl) {
         success: true,
         id: result.item.id,
         quantity: result.item.quantity,
+        items: listClientItems()
+      });
+      return;
+    }
+
+    const machineKitMatch = pathname.match(/^\/api\/machine-kits\/([^/]+)$/);
+    if (machineKitMatch && req.method === 'PUT') {
+      const payload = await readRequestBody(req);
+      const result = updateMachineKit(machineKitMatch[1], payload);
+      if (result.error) {
+        sendJson(res, 400, { error: result.error });
+        return;
+      }
+      sendJson(res, 200, {
+        success: true,
+        machineKit: toClientMachineKit(result.machineKit),
+        machineKits: listClientMachineKits()
+      });
+      return;
+    }
+
+    if (machineKitMatch && req.method === 'DELETE') {
+      const result = deleteMachineKit(machineKitMatch[1]);
+      if (result.error) {
+        sendJson(res, 404, { error: result.error });
+        return;
+      }
+      sendJson(res, 200, {
+        success: true,
+        id: result.id,
+        machineKits: listClientMachineKits()
+      });
+      return;
+    }
+
+    const machineSellMatch = pathname.match(/^\/api\/machine-kits\/([^/]+)\/sell$/);
+    if (machineSellMatch && req.method === 'POST') {
+      const payload = await readRequestBody(req);
+      const result = sellMachineKit(machineSellMatch[1], payload);
+      if (result.error) {
+        sendJson(res, 400, { error: result.error });
+        return;
+      }
+      sendJson(res, 200, {
+        success: true,
+        id: result.machineKit.id,
+        name: result.machineKit.name,
+        quantity: result.machineQuantity,
         items: listClientItems()
       });
       return;
@@ -580,6 +951,25 @@ async function handleApi(req, res, parsedUrl) {
       });
       saveSettings();
       sendJson(res, 200, { success: true, settings: appSettings });
+      return;
+    }
+
+    if (pathname === '/api/refresh-items' && req.method === 'POST') {
+      const payload = await readRequestBody(req);
+      const result = refreshItemsDatabase(payload);
+      if (result.error) {
+        sendJson(res, 400, { error: result.error });
+        return;
+      }
+
+      sendJson(res, 200, {
+        success: true,
+        itemCount: result.itemCount,
+        movementCount: result.movementCount,
+        machineKitCount: result.machineKitCount,
+        items: listClientItems(),
+        machineKits: listClientMachineKits()
+      });
       return;
     }
 

@@ -1,5 +1,6 @@
 const state = {
   items: [],
+  machineKits: [],
   historyItemId: null,
   draftImageData: '',
   draftImagePreviewData: '',
@@ -7,6 +8,7 @@ const state = {
   draftImageLoadToken: 0,
   thumbnailLoadIds: new Set(),
   draftMachines: [],
+  draftMachineKitComponents: [],
   scanTarget: null,
   scannerStream: null,
   scannerRafId: null,
@@ -34,6 +36,9 @@ document.addEventListener('DOMContentLoaded', () => {
   bindIpc();
   hydrateItemsFromCache();
   window.inventoryAPI.getItems();
+  if (typeof window.inventoryAPI.getMachineKits === 'function') {
+    window.inventoryAPI.getMachineKits();
+  }
   loadAppSettings();
 });
 
@@ -41,6 +46,7 @@ function cacheElements() {
   elements.inventoryTitle = document.getElementById('inventory-title');
   elements.backupNowBtn = document.getElementById('backup-now-btn');
   elements.openSettingsBtn = document.getElementById('open-settings-btn');
+  elements.openMachineModalBtn = document.getElementById('open-machine-modal-btn');
   elements.searchInput = document.getElementById('search-input');
   elements.scanSearchBtn = document.getElementById('scan-search-btn');
   elements.lowStockOnly = document.getElementById('low-stock-only');
@@ -94,19 +100,45 @@ function cacheElements() {
   elements.settingsForm = document.getElementById('settings-form');
   elements.companyNameInput = document.getElementById('company-name-input');
   elements.openBackupsFolderBtn = document.getElementById('open-backups-folder-btn');
+  elements.refreshItemsBtn = document.getElementById('refresh-items-btn');
+  elements.refreshItemsFileInput = document.getElementById('refresh-items-file-input');
   elements.backupInfo = document.getElementById('backup-info');
+
+  elements.machineModal = document.getElementById('machine-modal');
+  elements.machineKitsList = document.getElementById('machine-kits-list');
+  elements.machineKitForm = document.getElementById('machine-kit-form');
+  elements.machineKitFormTitle = document.getElementById('machine-kit-form-title');
+  elements.machineKitId = document.getElementById('machine-kit-id');
+  elements.machineKitName = document.getElementById('machine-kit-name');
+  elements.machineKitItemSelect = document.getElementById('machine-kit-item-select');
+  elements.machineKitItemQty = document.getElementById('machine-kit-item-qty');
+  elements.addMachineKitItemBtn = document.getElementById('add-machine-kit-item-btn');
+  elements.machineKitComponents = document.getElementById('machine-kit-components');
+  elements.clearMachineKitBtn = document.getElementById('clear-machine-kit-btn');
 
   elements.toast = document.getElementById('toast');
 }
 
 function bindEvents() {
-  document.getElementById('open-item-modal-btn').addEventListener('click', () => {
-    openItemModal();
-  });
+  const openItemModalButton = document.getElementById('open-item-modal-btn');
+  if (openItemModalButton) {
+    openItemModalButton.addEventListener('click', () => {
+      openItemModal();
+    });
+  }
+  if (elements.openMachineModalBtn) {
+    elements.openMachineModalBtn.addEventListener('click', openMachineModal);
+  }
   elements.backupNowBtn.addEventListener('click', onBackupNowClicked);
   elements.openSettingsBtn.addEventListener('click', openSettingsModal);
   elements.settingsForm.addEventListener('submit', onSettingsFormSubmit);
   elements.openBackupsFolderBtn.addEventListener('click', onOpenBackupsFolderClicked);
+  if (elements.refreshItemsBtn) {
+    elements.refreshItemsBtn.addEventListener('click', onRefreshItemsClicked);
+  }
+  if (elements.refreshItemsFileInput) {
+    elements.refreshItemsFileInput.addEventListener('change', onRefreshItemsFileSelected);
+  }
 
   elements.searchInput.addEventListener('input', renderItems);
   elements.lowStockOnly.addEventListener('change', renderItems);
@@ -138,6 +170,29 @@ function bindEvents() {
   elements.stockForm.addEventListener('submit', onStockFormSubmit);
   elements.scannerStartBtn.addEventListener('click', startScanner);
   elements.scannerStopBtn.addEventListener('click', stopScanner);
+  if (elements.machineKitForm) {
+    elements.machineKitForm.addEventListener('submit', onMachineKitFormSubmit);
+  }
+  if (elements.addMachineKitItemBtn) {
+    elements.addMachineKitItemBtn.addEventListener('click', addMachineKitComponentFromInput);
+  }
+  if (elements.machineKitItemQty) {
+    elements.machineKitItemQty.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        addMachineKitComponentFromInput();
+      }
+    });
+  }
+  if (elements.machineKitComponents) {
+    elements.machineKitComponents.addEventListener('click', onMachineKitComponentsClick);
+  }
+  if (elements.machineKitsList) {
+    elements.machineKitsList.addEventListener('click', onMachineKitsListClick);
+  }
+  if (elements.clearMachineKitBtn) {
+    elements.clearMachineKitBtn.addEventListener('click', resetMachineKitForm);
+  }
 
   elements.itemsBody.addEventListener('click', onTableAction);
 
@@ -167,13 +222,54 @@ function bindIpc() {
     state.items = normalizeItems(items);
     persistItemsCache(state.items);
     renderAll();
+    renderMachineKitItemOptions();
+    renderMachineKits();
   });
 
   window.inventoryAPI.onItemsUpdated((items) => {
     state.items = normalizeItems(items);
     persistItemsCache(state.items);
     renderAll();
+    renderMachineKitItemOptions();
+    renderMachineKits();
   });
+
+  if (typeof window.inventoryAPI.onMachineKitsList === 'function') {
+    window.inventoryAPI.onMachineKitsList((machineKits) => {
+      state.machineKits = normalizeMachineKits(machineKits);
+      renderMachineKits();
+    });
+  }
+
+  if (typeof window.inventoryAPI.onMachineKitsUpdated === 'function') {
+    window.inventoryAPI.onMachineKitsUpdated((machineKits) => {
+      state.machineKits = normalizeMachineKits(machineKits);
+      renderMachineKits();
+    });
+  }
+
+  if (typeof window.inventoryAPI.onMachineKitSaved === 'function') {
+    window.inventoryAPI.onMachineKitSaved((payload) => {
+      resetMachineKitForm();
+      const message = payload?.type === 'update' ? 'Machine updated.' : 'Machine added.';
+      showToast(message);
+    });
+  }
+
+  if (typeof window.inventoryAPI.onMachineKitDeleted === 'function') {
+    window.inventoryAPI.onMachineKitDeleted(() => {
+      resetMachineKitForm();
+      showToast('Machine deleted.');
+    });
+  }
+
+  if (typeof window.inventoryAPI.onMachineKitSold === 'function') {
+    window.inventoryAPI.onMachineKitSold((payload) => {
+      const machineName = payload?.name || 'Machine';
+      const quantity = Math.max(1, Math.floor(toNumber(payload?.quantity, 1)));
+      showToast(`${machineName} sold (${quantity}). Stock auto-updated.`);
+    });
+  }
 
   window.inventoryAPI.onItemMovements((payload) => {
     if (!payload || payload.itemId !== state.historyItemId) {
@@ -342,6 +438,61 @@ async function onOpenBackupsFolderClicked() {
   }
 }
 
+function onRefreshItemsClicked() {
+  if (!elements.refreshItemsFileInput) {
+    showToast('Refresh is unavailable in this build.', true);
+    return;
+  }
+
+  elements.refreshItemsFileInput.value = '';
+  elements.refreshItemsFileInput.click();
+}
+
+async function onRefreshItemsFileSelected(event) {
+  const file = event.target.files?.[0];
+  if (!file) {
+    return;
+  }
+
+  if (!file.name.toLowerCase().endsWith('.json')) {
+    showToast('Choose a JSON file (inventory-data.json).', true);
+    event.target.value = '';
+    return;
+  }
+
+  if (typeof window.inventoryAPI.refreshItems !== 'function') {
+    showToast('Refresh is unavailable in this build.', true);
+    event.target.value = '';
+    return;
+  }
+
+  let parsed;
+  try {
+    const raw = await file.text();
+    parsed = JSON.parse(raw);
+  } catch (_error) {
+    showToast('Invalid JSON file. Use inventory-data.json.', true);
+    event.target.value = '';
+    return;
+  }
+
+  try {
+    const result = await window.inventoryAPI.refreshItems(parsed);
+
+    if (!result?.success) {
+      showToast(result?.error || 'Could not refresh items.', true);
+      return;
+    }
+
+    const itemCount = Math.max(0, Math.floor(toNumber(result.itemCount, 0)));
+    showToast(`Refresh complete. ${itemCount} item(s) loaded.`);
+  } catch (error) {
+    showToast(error?.message || 'Could not refresh items.', true);
+  } finally {
+    event.target.value = '';
+  }
+}
+
 async function onSettingsFormSubmit(event) {
   event.preventDefault();
 
@@ -378,6 +529,22 @@ function normalizeItems(items) {
     reorderLevel: Math.max(0, Math.floor(toNumber(item.reorderLevel, 0))),
     unitPrice: Math.max(0, toNumber(item.unitPrice, 0))
   }));
+}
+
+function normalizeMachineKits(machineKits) {
+  if (!Array.isArray(machineKits)) {
+    return [];
+  }
+
+  return machineKits
+    .map((machineKit) => ({
+      id: typeof machineKit?.id === 'string' ? machineKit.id : '',
+      name: typeof machineKit?.name === 'string' ? machineKit.name.trim().replace(/\s+/g, ' ') : '',
+      components: sanitizeMachineKitComponents(machineKit?.components),
+      createdAt: machineKit?.createdAt || '',
+      updatedAt: machineKit?.updatedAt || ''
+    }))
+    .filter((machineKit) => machineKit.id && machineKit.name);
 }
 
 function sanitizeImageData(imageData) {
@@ -443,9 +610,307 @@ function sanitizeMachineList(machines) {
   return result;
 }
 
+function sanitizeMachineKitComponents(components) {
+  const source = Array.isArray(components) ? components : [];
+  const totals = new Map();
+
+  source.forEach((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return;
+    }
+
+    const itemId = typeof entry.itemId === 'string' ? entry.itemId.trim() : '';
+    const quantity = Math.max(0, Math.floor(toNumber(entry.quantity, 0)));
+    if (!itemId || quantity <= 0) {
+      return;
+    }
+
+    totals.set(itemId, (totals.get(itemId) || 0) + quantity);
+  });
+
+  return Array.from(totals.entries()).map(([itemId, quantity]) => ({
+    itemId,
+    quantity
+  }));
+}
+
 function toNumber(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function openMachineModal() {
+  if (!elements.machineModal || !elements.machineKitName) {
+    showToast('Machine manager is unavailable in this build.', true);
+    return;
+  }
+
+  resetMachineKitForm();
+  renderMachineKits();
+  openModal('machine-modal');
+  elements.machineKitName.focus();
+  if (typeof window.inventoryAPI.getMachineKits === 'function') {
+    window.inventoryAPI.getMachineKits();
+  }
+}
+
+function resetMachineKitForm() {
+  if (!elements.machineKitForm || !elements.machineKitId || !elements.machineKitName || !elements.machineKitFormTitle || !elements.machineKitItemQty) {
+    return;
+  }
+
+  elements.machineKitForm.reset();
+  elements.machineKitId.value = '';
+  elements.machineKitName.value = '';
+  elements.machineKitFormTitle.textContent = 'Add Machine';
+  elements.machineKitItemQty.value = '1';
+  state.draftMachineKitComponents = [];
+  renderMachineKitItemOptions();
+  renderDraftMachineKitComponents();
+}
+
+function renderMachineKitItemOptions() {
+  if (!elements.machineKitItemSelect) {
+    return;
+  }
+
+  const previousSelection = elements.machineKitItemSelect.value;
+  const sortedItems = [...state.items]
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+
+  if (sortedItems.length === 0) {
+    elements.machineKitItemSelect.innerHTML = '<option value="">Add inventory items first</option>';
+    elements.machineKitItemSelect.disabled = true;
+    return;
+  }
+
+  elements.machineKitItemSelect.disabled = false;
+  elements.machineKitItemSelect.innerHTML = sortedItems
+    .map((item) => `<option value="${item.id}">${escapeHtml(item.name)} (Stock: ${item.quantity})</option>`)
+    .join('');
+
+  const hasPrevious = sortedItems.some((item) => item.id === previousSelection);
+  elements.machineKitItemSelect.value = hasPrevious
+    ? previousSelection
+    : sortedItems[0].id;
+}
+
+function getMachineKitBuildableCount(machineKit) {
+  if (!machineKit || !Array.isArray(machineKit.components) || machineKit.components.length === 0) {
+    return 0;
+  }
+
+  let minBuildable = Number.POSITIVE_INFINITY;
+  for (const component of machineKit.components) {
+    const item = state.items.find((entry) => entry.id === component.itemId);
+    if (!item) {
+      return 0;
+    }
+
+    const buildableFromItem = Math.floor(item.quantity / component.quantity);
+    minBuildable = Math.min(minBuildable, buildableFromItem);
+  }
+
+  return Number.isFinite(minBuildable) ? Math.max(0, minBuildable) : 0;
+}
+
+function renderMachineKits() {
+  if (!elements.machineKitsList) {
+    return;
+  }
+
+  if (!Array.isArray(state.machineKits) || state.machineKits.length === 0) {
+    elements.machineKitsList.innerHTML = '<p class="machine-kit-empty">No machines yet. Add one on the right.</p>';
+    return;
+  }
+
+  const sortedMachineKits = [...state.machineKits]
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+
+  elements.machineKitsList.innerHTML = sortedMachineKits.map((machineKit) => {
+    const buildable = getMachineKitBuildableCount(machineKit);
+    const componentsMarkup = machineKit.components.map((component) => {
+      const item = state.items.find((entry) => entry.id === component.itemId);
+      const label = item ? item.name : 'Missing item';
+      const stockText = item ? `Stock ${item.quantity}` : 'Missing';
+      return `<span class="machine-kit-component">${escapeHtml(label)} x${component.quantity} (${stockText})</span>`;
+    }).join('');
+
+    return `
+      <article class="machine-kit-card">
+        <div class="machine-kit-top">
+          <div class="machine-kit-name">${escapeHtml(machineKit.name)}</div>
+        </div>
+        <p class="machine-kit-buildable">Can build now: ${buildable}</p>
+        <div class="machine-kit-component-list">${componentsMarkup}</div>
+        <div class="machine-kit-actions">
+          <button class="btn btn-small btn-primary" data-machine-action="sell" data-id="${machineKit.id}" ${buildable > 0 ? '' : 'disabled'}>Sell</button>
+          <button class="btn btn-small" data-machine-action="edit" data-id="${machineKit.id}">Edit</button>
+          <button class="btn btn-small btn-danger" data-machine-action="delete" data-id="${machineKit.id}">Delete</button>
+        </div>
+      </article>
+    `;
+  }).join('');
+}
+
+function renderDraftMachineKitComponents() {
+  if (!elements.machineKitComponents) {
+    return;
+  }
+
+  if (state.draftMachineKitComponents.length === 0) {
+    elements.machineKitComponents.innerHTML = '<span class="machine-empty">No items linked to this machine yet.</span>';
+    return;
+  }
+
+  elements.machineKitComponents.innerHTML = state.draftMachineKitComponents.map((component, index) => {
+    const item = state.items.find((entry) => entry.id === component.itemId);
+    const itemName = item ? item.name : 'Missing item';
+    const stockText = item ? `Current stock: ${item.quantity}` : 'Item is missing';
+
+    return `
+      <div class="machine-kit-component-row">
+        <div>
+          <strong>${escapeHtml(itemName)}</strong>
+          <div class="machine-kit-component-meta">${escapeHtml(stockText)} | Uses ${component.quantity} per machine</div>
+        </div>
+        <button type="button" class="btn btn-small btn-danger" data-component-index="${index}">Remove</button>
+      </div>
+    `;
+  }).join('');
+}
+
+function addMachineKitComponentFromInput() {
+  const itemId = elements.machineKitItemSelect.value;
+  if (!itemId) {
+    showToast('Select an inventory item first.', true);
+    return;
+  }
+
+  const quantity = Math.max(0, Math.floor(toNumber(elements.machineKitItemQty.value, 0)));
+  if (quantity <= 0) {
+    showToast('Item quantity per machine must be at least 1.', true);
+    return;
+  }
+
+  const existingIndex = state.draftMachineKitComponents.findIndex((entry) => entry.itemId === itemId);
+  if (existingIndex >= 0) {
+    state.draftMachineKitComponents[existingIndex] = {
+      ...state.draftMachineKitComponents[existingIndex],
+      quantity: state.draftMachineKitComponents[existingIndex].quantity + quantity
+    };
+  } else {
+    state.draftMachineKitComponents.push({ itemId, quantity });
+  }
+
+  state.draftMachineKitComponents = sanitizeMachineKitComponents(state.draftMachineKitComponents);
+  elements.machineKitItemQty.value = '1';
+  renderDraftMachineKitComponents();
+}
+
+function onMachineKitComponentsClick(event) {
+  const button = event.target.closest('button[data-component-index]');
+  if (!button) {
+    return;
+  }
+
+  const index = Number(button.dataset.componentIndex);
+  if (!Number.isInteger(index) || index < 0 || index >= state.draftMachineKitComponents.length) {
+    return;
+  }
+
+  state.draftMachineKitComponents = state.draftMachineKitComponents
+    .filter((_entry, entryIndex) => entryIndex !== index);
+  renderDraftMachineKitComponents();
+}
+
+function onMachineKitFormSubmit(event) {
+  event.preventDefault();
+
+  const payload = {
+    id: elements.machineKitId.value.trim(),
+    name: elements.machineKitName.value.trim(),
+    components: sanitizeMachineKitComponents(state.draftMachineKitComponents)
+  };
+
+  if (payload.components.length === 0) {
+    showToast('Add at least one item for this machine.', true);
+    return;
+  }
+
+  if (!payload.id) {
+    if (typeof window.inventoryAPI.addMachineKit !== 'function') {
+      showToast('Machine feature is unavailable in this build.', true);
+      return;
+    }
+    window.inventoryAPI.addMachineKit(payload);
+    return;
+  }
+
+  if (typeof window.inventoryAPI.updateMachineKit !== 'function') {
+    showToast('Machine feature is unavailable in this build.', true);
+    return;
+  }
+  window.inventoryAPI.updateMachineKit(payload);
+}
+
+function onMachineKitsListClick(event) {
+  const button = event.target.closest('button[data-machine-action]');
+  if (!button) {
+    return;
+  }
+
+  const machineKitId = button.dataset.id;
+  const machineKit = state.machineKits.find((entry) => entry.id === machineKitId);
+  if (!machineKit) {
+    showToast('Machine no longer exists.', true);
+    return;
+  }
+
+  const action = button.dataset.machineAction;
+  if (action === 'edit') {
+    elements.machineKitId.value = machineKit.id;
+    elements.machineKitName.value = machineKit.name;
+    elements.machineKitFormTitle.textContent = 'Edit Machine';
+    state.draftMachineKitComponents = sanitizeMachineKitComponents(machineKit.components);
+    renderDraftMachineKitComponents();
+    elements.machineKitName.focus();
+    return;
+  }
+
+  if (action === 'delete') {
+    const confirmed = window.confirm(`Delete machine "${machineKit.name}"?`);
+    if (confirmed) {
+      if (typeof window.inventoryAPI.deleteMachineKit !== 'function') {
+        showToast('Machine feature is unavailable in this build.', true);
+        return;
+      }
+      window.inventoryAPI.deleteMachineKit(machineKit.id);
+    }
+    return;
+  }
+
+  if (action === 'sell') {
+    const raw = window.prompt(`How many "${machineKit.name}" machines were sold?`, '1');
+    if (raw == null) {
+      return;
+    }
+
+    const quantity = Math.max(0, Math.floor(toNumber(raw, 0)));
+    if (quantity <= 0) {
+      showToast('Enter a valid machine quantity.', true);
+      return;
+    }
+
+    if (typeof window.inventoryAPI.sellMachineKit !== 'function') {
+      showToast('Machine feature is unavailable in this build.', true);
+      return;
+    }
+    window.inventoryAPI.sellMachineKit({
+      id: machineKit.id,
+      quantity
+    });
+  }
 }
 
 function renderAll() {
@@ -1217,6 +1682,10 @@ function closeModal(id) {
 
   if (id === 'history-modal') {
     state.historyItemId = null;
+  }
+
+  if (id === 'machine-modal') {
+    resetMachineKitForm();
   }
 }
 

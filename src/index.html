@@ -19,6 +19,7 @@
       <div class="header-actions">
         <button id="backup-now-btn" class="btn" type="button">Backup Now</button>
         <button id="open-settings-btn" class="btn" type="button">Settings</button>
+        <button id="open-machine-modal-btn" class="btn" type="button">Machines</button>
         <button id="open-item-modal-btn" class="btn btn-primary" type="button">Add Item</button>
       </div>
     </header>
@@ -215,6 +216,8 @@
 
         <div class="full-width settings-inline">
           <button id="open-backups-folder-btn" class="btn" type="button">Open Backup Folder</button>
+          <button id="refresh-items-btn" class="btn" type="button">Refresh Items</button>
+          <input id="refresh-items-file-input" class="hidden-input" type="file" accept=".json,application/json">
           <span id="backup-info" class="muted"></span>
         </div>
 
@@ -223,6 +226,50 @@
           <button type="submit" class="btn btn-primary">Save Settings</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <div id="machine-modal" class="modal" aria-hidden="true">
+    <div class="modal-panel wide machine-modal-panel">
+      <button class="modal-close" data-close="machine-modal" aria-label="Close">x</button>
+      <h2>Machine Builds</h2>
+      <p class="modal-subtitle">Link items to each machine. Selling a machine will deduct linked item quantities automatically.</p>
+
+      <div class="machine-manager-grid">
+        <section>
+          <h3 class="section-title">Saved Machines</h3>
+          <div id="machine-kits-list" class="machine-kits-list"></div>
+        </section>
+
+        <section>
+          <h3 id="machine-kit-form-title" class="section-title">Add Machine</h3>
+          <form id="machine-kit-form" class="form-grid">
+            <input id="machine-kit-id" type="hidden">
+
+            <label class="full-width">
+              Machine Name
+              <input id="machine-kit-name" type="text" placeholder="Example: MB-5500 Setup" required>
+            </label>
+
+            <label class="full-width">
+              Add Item To Machine
+              <div class="machine-kit-input-row">
+                <select id="machine-kit-item-select"></select>
+                <input id="machine-kit-item-qty" type="number" min="1" step="1" value="1">
+                <button id="add-machine-kit-item-btn" type="button" class="btn btn-small">Add Item</button>
+              </div>
+              <span class="image-upload-meta">Quantity is how many units of that item one machine uses.</span>
+            </label>
+
+            <div id="machine-kit-components" class="machine-kit-components full-width"></div>
+
+            <div class="form-actions full-width">
+              <button id="clear-machine-kit-btn" type="button" class="btn">Clear</button>
+              <button type="submit" class="btn btn-primary">Save Machine</button>
+            </div>
+          </form>
+        </section>
+      </div>
     </div>
   </div>
 

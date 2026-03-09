@@ -8,7 +8,7 @@ const SETTINGS_FILE = path.join(BASE_DATA_DIR, 'app-settings.json');
 const BACKUP_DIR = path.join(BASE_DATA_DIR, 'backups');
 const AUTO_BACKUP_CHECK_INTERVAL_MS = 30 * 60 * 1000;
 
-let database = { items: [], movements: [] };
+let database = { items: [], movements: [], machineKits: [] };
 let appSettings = { companyName: 'CWT Inventory', lastAutoBackupDate: '' };
 let mainWindow;
 let autoBackupTimer = null;
@@ -16,7 +16,8 @@ let autoBackupTimer = null;
 function createDefaultDatabase() {
   return {
     items: [],
-    movements: []
+    movements: [],
+    machineKits: []
   };
 }
 
@@ -105,6 +106,62 @@ function sanitizeMachineList(machines) {
   return result;
 }
 
+function sanitizeMachineKitName(name) {
+  if (typeof name !== 'string') {
+    return '';
+  }
+
+  return name.trim().replace(/\s+/g, ' ');
+}
+
+function sanitizeMachineKitComponents(components) {
+  if (!Array.isArray(components)) {
+    return [];
+  }
+
+  const totals = new Map();
+  components.forEach((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return;
+    }
+
+    const itemId = typeof entry.itemId === 'string' ? entry.itemId.trim() : '';
+    const quantity = Math.max(0, Math.floor(parseNumber(entry.quantity, 0)));
+    if (!itemId || quantity <= 0) {
+      return;
+    }
+
+    totals.set(itemId, (totals.get(itemId) || 0) + quantity);
+  });
+
+  return Array.from(totals.entries()).map(([itemId, quantity]) => ({
+    itemId,
+    quantity
+  }));
+}
+
+function normalizeMachineKit(rawMachineKit) {
+  if (!rawMachineKit || typeof rawMachineKit !== 'object') {
+    return null;
+  }
+
+  const name = sanitizeMachineKitName(rawMachineKit.name);
+  if (!name) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  return {
+    id: typeof rawMachineKit.id === 'string' && rawMachineKit.id.trim()
+      ? rawMachineKit.id.trim()
+      : createId('machine'),
+    name,
+    components: sanitizeMachineKitComponents(rawMachineKit.components),
+    createdAt: typeof rawMachineKit.createdAt === 'string' ? rawMachineKit.createdAt : now,
+    updatedAt: typeof rawMachineKit.updatedAt === 'string' ? rawMachineKit.updatedAt : now
+  };
+}
+
 function normalizeDatabase(data) {
   if (!data || typeof data !== 'object') {
     return createDefaultDatabase();
@@ -120,7 +177,29 @@ function normalizeDatabase(data) {
         imagePreviewData: sanitizeImageData(item?.imagePreviewData)
       }))
       : [],
-    movements: Array.isArray(data.movements) ? data.movements : []
+    movements: Array.isArray(data.movements) ? data.movements : [],
+    machineKits: Array.isArray(data.machineKits)
+      ? data.machineKits
+        .map((machineKit) => normalizeMachineKit(machineKit))
+        .filter(Boolean)
+      : []
+  };
+}
+
+function refreshItemsDatabase(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object' || !Array.isArray(snapshot.items)) {
+    return { error: 'Invalid inventory backup file. Choose inventory-data.json.' };
+  }
+
+  database = normalizeDatabase(snapshot);
+  saveDatabase();
+
+  return {
+    items: database.items,
+    machineKits: database.machineKits,
+    itemCount: database.items.length,
+    movementCount: database.movements.length,
+    machineKitCount: database.machineKits.length
   };
 }
 
@@ -285,8 +364,19 @@ function broadcastItems() {
   mainWindow.webContents.send('items-updated', database.items);
 }
 
+function broadcastMachineKits() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.webContents.send('machine-kits-updated', database.machineKits);
+}
+
 function findItem(itemId) {
   return database.items.find((item) => item.id === itemId);
+}
+
+function findMachineKit(machineKitId) {
+  return database.machineKits.find((machineKit) => machineKit.id === machineKitId);
 }
 
 function isDuplicateSku(sku, excludeId = null) {
@@ -301,6 +391,104 @@ function isDuplicateSku(sku, excludeId = null) {
     }
     return (item.sku || '').trim().toLowerCase() === normalizedSku;
   });
+}
+
+function isDuplicateMachineKitName(name, excludeId = null) {
+  const normalizedName = sanitizeMachineKitName(name).toLowerCase();
+  if (!normalizedName) {
+    return false;
+  }
+
+  return database.machineKits.some((machineKit) => {
+    if (excludeId && machineKit.id === excludeId) {
+      return false;
+    }
+    return sanitizeMachineKitName(machineKit.name).toLowerCase() === normalizedName;
+  });
+}
+
+function getMachineKitRequirements(machineKit, machineQuantity) {
+  const requirements = [];
+
+  for (const component of machineKit.components) {
+    const item = findItem(component.itemId);
+    if (!item) {
+      return {
+        error: `Machine "${machineKit.name}" references a missing item. Edit this machine and remove the missing part.`
+      };
+    }
+
+    const requiredQuantity = component.quantity * machineQuantity;
+    if (requiredQuantity > item.quantity) {
+      return {
+        error: `Not enough stock for "${item.name}". Need ${requiredQuantity}, available ${item.quantity}.`
+      };
+    }
+
+    requirements.push({
+      item,
+      requiredQuantity
+    });
+  }
+
+  return { requirements };
+}
+
+function applyMachineSale(machineKit, machineQuantity, reasonInput = '') {
+  const machineName = sanitizeMachineKitName(machineKit?.name);
+  if (!machineName) {
+    return { error: 'Machine not found.' };
+  }
+
+  const normalizedQuantity = Math.max(0, Math.floor(parseNumber(machineQuantity, 0)));
+  if (normalizedQuantity <= 0) {
+    return { error: 'Machine quantity must be greater than zero.' };
+  }
+
+  const components = sanitizeMachineKitComponents(machineKit?.components);
+  if (components.length === 0) {
+    return { error: 'This machine has no linked inventory items.' };
+  }
+
+  const machineWithSafeComponents = {
+    ...machineKit,
+    name: machineName,
+    components
+  };
+
+  const requirementsResult = getMachineKitRequirements(machineWithSafeComponents, normalizedQuantity);
+  if (requirementsResult.error) {
+    return requirementsResult;
+  }
+
+  const now = new Date().toISOString();
+  const reason = (reasonInput || '').trim() || `Machine sold: ${machineName} x${normalizedQuantity}`;
+
+  requirementsResult.requirements.forEach(({ item, requiredQuantity }) => {
+    const previousQuantity = item.quantity;
+    const newQuantity = previousQuantity - requiredQuantity;
+    item.quantity = newQuantity;
+    item.updatedAt = now;
+
+    database.movements.push({
+      id: createId('move'),
+      itemId: item.id,
+      type: 'out',
+      quantity: requiredQuantity,
+      previousQuantity,
+      newQuantity,
+      reason,
+      machineKitId: machineKit.id,
+      machineKitName: machineName,
+      machineQuantity: normalizedQuantity,
+      timestamp: now
+    });
+  });
+
+  return {
+    machineQuantity: normalizedQuantity,
+    reason
+  };
 }
 
 function createWindow() {
@@ -359,6 +547,10 @@ app.on('before-quit', () => {
 
 ipcMain.on('get-items', (event) => {
   event.reply('items-list', database.items);
+});
+
+ipcMain.on('get-machine-kits', (event) => {
+  event.reply('machine-kits-list', database.machineKits);
 });
 
 ipcMain.on('add-item', (event, payload) => {
@@ -467,9 +659,35 @@ ipcMain.on('delete-item', (event, itemId) => {
   }
 
   database.movements = database.movements.filter((movement) => movement.itemId !== itemId);
+
+  let machineKitsChanged = false;
+  database.machineKits = database.machineKits
+    .map((machineKit) => {
+      const filteredComponents = machineKit.components.filter((component) => component.itemId !== itemId);
+      if (filteredComponents.length !== machineKit.components.length) {
+        machineKitsChanged = true;
+        return {
+          ...machineKit,
+          components: filteredComponents,
+          updatedAt: new Date().toISOString()
+        };
+      }
+      return machineKit;
+    })
+    .filter((machineKit) => {
+      if (machineKit.components.length === 0) {
+        machineKitsChanged = true;
+        return false;
+      }
+      return true;
+    });
+
   saveDatabase();
   event.reply('item-deleted', { id: itemId });
   broadcastItems();
+  if (machineKitsChanged) {
+    broadcastMachineKits();
+  }
 });
 
 ipcMain.on('adjust-stock', (event, payload) => {
@@ -526,6 +744,119 @@ ipcMain.on('adjust-stock', (event, payload) => {
 
   saveDatabase();
   event.reply('stock-adjusted', { id: item.id, quantity: nextQuantity });
+  broadcastItems();
+});
+
+ipcMain.on('add-machine-kit', (event, payload) => {
+  const name = sanitizeMachineKitName(payload?.name);
+  if (!name) {
+    sendError(event, 'Machine name is required.');
+    return;
+  }
+  if (isDuplicateMachineKitName(name)) {
+    sendError(event, 'Machine already exists. Use a unique machine name.');
+    return;
+  }
+
+  const components = sanitizeMachineKitComponents(payload?.components);
+  if (components.length === 0) {
+    sendError(event, 'Add at least one inventory item to this machine.');
+    return;
+  }
+
+  const missingComponent = components.find((component) => !findItem(component.itemId));
+  if (missingComponent) {
+    sendError(event, 'One or more linked items no longer exist. Refresh and try again.');
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const machineKit = {
+    id: createId('machine'),
+    name,
+    components,
+    createdAt: now,
+    updatedAt: now
+  };
+
+  database.machineKits.push(machineKit);
+  saveDatabase();
+  event.reply('machine-kit-saved', { type: 'add', machineKit });
+  broadcastMachineKits();
+});
+
+ipcMain.on('update-machine-kit', (event, payload) => {
+  const machineKitId = payload?.id;
+  const machineKit = findMachineKit(machineKitId);
+  if (!machineKit) {
+    sendError(event, 'Machine not found.');
+    return;
+  }
+
+  const name = sanitizeMachineKitName(payload?.name);
+  if (!name) {
+    sendError(event, 'Machine name is required.');
+    return;
+  }
+  if (isDuplicateMachineKitName(name, machineKitId)) {
+    sendError(event, 'Machine already exists. Use a unique machine name.');
+    return;
+  }
+
+  const components = sanitizeMachineKitComponents(payload?.components);
+  if (components.length === 0) {
+    sendError(event, 'Add at least one inventory item to this machine.');
+    return;
+  }
+
+  const missingComponent = components.find((component) => !findItem(component.itemId));
+  if (missingComponent) {
+    sendError(event, 'One or more linked items no longer exist. Refresh and try again.');
+    return;
+  }
+
+  machineKit.name = name;
+  machineKit.components = components;
+  machineKit.updatedAt = new Date().toISOString();
+
+  saveDatabase();
+  event.reply('machine-kit-saved', { type: 'update', machineKit });
+  broadcastMachineKits();
+});
+
+ipcMain.on('delete-machine-kit', (event, machineKitId) => {
+  const beforeCount = database.machineKits.length;
+  database.machineKits = database.machineKits.filter((machineKit) => machineKit.id !== machineKitId);
+
+  if (database.machineKits.length === beforeCount) {
+    sendError(event, 'Machine not found.');
+    return;
+  }
+
+  saveDatabase();
+  event.reply('machine-kit-deleted', { id: machineKitId });
+  broadcastMachineKits();
+});
+
+ipcMain.on('sell-machine-kit', (event, payload) => {
+  const machineKit = findMachineKit(payload?.id);
+  if (!machineKit) {
+    sendError(event, 'Machine not found.');
+    return;
+  }
+
+  const saleResult = applyMachineSale(machineKit, payload?.quantity, payload?.reason);
+  if (saleResult.error) {
+    sendError(event, saleResult.error);
+    return;
+  }
+
+  saveDatabase();
+  event.reply('machine-kit-sold', {
+    id: machineKit.id,
+    name: machineKit.name,
+    quantity: saleResult.machineQuantity
+  });
   broadcastItems();
 });
 
@@ -605,4 +936,26 @@ ipcMain.handle('update-app-settings', async (_event, payload) => {
   }
 
   return appSettings;
+});
+
+ipcMain.handle('refresh-items', async (_event, payload) => {
+  const result = refreshItemsDatabase(payload);
+  if (result.error) {
+    return {
+      success: false,
+      error: result.error
+    };
+  }
+
+  broadcastItems();
+  broadcastMachineKits();
+
+  return {
+    success: true,
+    items: result.items,
+    machineKits: result.machineKits,
+    itemCount: result.itemCount,
+    movementCount: result.movementCount,
+    machineKitCount: result.machineKitCount
+  };
 });

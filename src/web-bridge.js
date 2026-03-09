@@ -52,6 +52,12 @@
         emit('items-list', payload.items || []);
       });
     },
+    getMachineKits: function getMachineKits() {
+      run(async function loadMachineKits() {
+        const payload = await request('/machine-kits');
+        emit('machine-kits-list', payload.machineKits || []);
+      });
+    },
     getItemImage: async function getItemImage(itemId) {
       const payload = await request(`/items/${encodeURIComponent(itemId)}/image`);
       return {
@@ -80,6 +86,9 @@
         const payload = await request(`/items/${encodeURIComponent(id)}`, { method: 'DELETE' });
         emit('item-deleted', { id: payload.id });
         emit('items-updated', payload.items || []);
+        if (Array.isArray(payload.machineKits)) {
+          emit('machine-kits-updated', payload.machineKits);
+        }
       });
     },
     adjustStock: function adjustStock(data) {
@@ -89,6 +98,44 @@
           body: data
         });
         emit('stock-adjusted', { id: payload.id, quantity: payload.quantity });
+        emit('items-updated', payload.items || []);
+      });
+    },
+    addMachineKit: function addMachineKit(data) {
+      run(async function createMachineKit() {
+        const payload = await request('/machine-kits', { method: 'POST', body: data });
+        emit('machine-kit-saved', { type: 'add', machineKit: payload.machineKit });
+        emit('machine-kits-updated', payload.machineKits || []);
+      });
+    },
+    updateMachineKit: function updateMachineKit(data) {
+      run(async function saveMachineKit() {
+        const payload = await request(`/machine-kits/${encodeURIComponent(data.id)}`, {
+          method: 'PUT',
+          body: data
+        });
+        emit('machine-kit-saved', { type: 'update', machineKit: payload.machineKit });
+        emit('machine-kits-updated', payload.machineKits || []);
+      });
+    },
+    deleteMachineKit: function deleteMachineKit(id) {
+      run(async function removeMachineKit() {
+        const payload = await request(`/machine-kits/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        emit('machine-kit-deleted', { id: payload.id });
+        emit('machine-kits-updated', payload.machineKits || []);
+      });
+    },
+    sellMachineKit: function sellMachineKit(data) {
+      run(async function recordMachineSale() {
+        const payload = await request(`/machine-kits/${encodeURIComponent(data.id)}/sell`, {
+          method: 'POST',
+          body: data
+        });
+        emit('machine-kit-sold', {
+          id: payload.id,
+          name: payload.name,
+          quantity: payload.quantity
+        });
         emit('items-updated', payload.items || []);
       });
     },
@@ -124,12 +171,39 @@
       emit('settings-updated', payload.settings || {});
       return payload.settings || {};
     },
+    refreshItems: async function refreshItems(data) {
+      const payload = await request('/refresh-items', { method: 'POST', body: data });
+      emit('items-updated', payload.items || []);
+      emit('machine-kits-updated', payload.machineKits || []);
+      return {
+        success: Boolean(payload.success),
+        error: payload.error || '',
+        itemCount: payload.itemCount || 0,
+        movementCount: payload.movementCount || 0,
+        machineKitCount: payload.machineKitCount || 0
+      };
+    },
 
     onItemsList: function onItemsList(callback) {
       setListener('items-list', callback);
     },
     onItemsUpdated: function onItemsUpdated(callback) {
       setListener('items-updated', callback);
+    },
+    onMachineKitsList: function onMachineKitsList(callback) {
+      setListener('machine-kits-list', callback);
+    },
+    onMachineKitsUpdated: function onMachineKitsUpdated(callback) {
+      setListener('machine-kits-updated', callback);
+    },
+    onMachineKitSaved: function onMachineKitSaved(callback) {
+      setListener('machine-kit-saved', callback);
+    },
+    onMachineKitDeleted: function onMachineKitDeleted(callback) {
+      setListener('machine-kit-deleted', callback);
+    },
+    onMachineKitSold: function onMachineKitSold(callback) {
+      setListener('machine-kit-sold', callback);
     },
     onItemMovements: function onItemMovements(callback) {
       setListener('item-movements-list', callback);
